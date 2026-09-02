@@ -1,0 +1,56 @@
+import { Hono } from 'hono';
+import { currentUser } from '../auth/session.js';
+import type { Store } from '../db/index.js';
+
+export interface AccountDeps {
+  store: Store;
+}
+
+type Env = { Variables: { userId: string } };
+
+/**
+ * Routes for a logged-in user who does not necessarily have an organisation
+ * yet — deliberately separate from `api.ts`, whose middleware requires one.
+ * This is where "which orgs exist to ask for" and "did anyone answer my ask"
+ * live.
+ */
+export function createAccountApi(deps: AccountDeps): Hono<Env> {
+  const api = new Hono<Env>();
+
+  api.use('*', async (c, next) => {
+    const user = currentUser(c, deps.store);
+    if (!user) return c.json({ error: 'Log in first.' }, 401);
+    c.set('userId', user.id);
+    await next();
+  });
+
+  /** Every organisation this user doesn't already belong to — enough to pick one to ask for. */
+  api.get('/orgs', (c) => {
+    const already = new Set(deps.store.listOrgsForUser(c.get('userId')).map((o) => o.id));
+    return c.json({ orgs: deps.store.listOrgNames().filter((o) => !already.has(o.id)) });
+  });
+
+  /** This user's most recent request, so a pending ask shows as pending rather than as nothing. */
+  api.get('/org-request', (c) => c.json({ request: deps.store.getOrgRequestForUser(c.get('userId')) }));
+
+  api.post('/org-request', async (c) => {
+    const userId = c.get('userId');
+
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const orgId = typeof body['orgId'] === 'string' ? body['orgId'] : '';
+    if (!orgId) return c.json({ error: 'orgId is required.' }, 400);
+    if (!deps.store.getOrg(orgId)) return c.json({ error: 'No organisation with that id.' }, 404);
+    if (deps.store.userHasOrg(userId, orgId)) return c.json({ error: 'You already belong to that organisation.' }, 409);
+
+    try {
+      deps.store.createOrgRequest(userId, orgId);
+    } catch {
+      // The partial unique index is what actually enforces this; a plain try/catch
+      // is simpler here than a pre-check that could itself race with a second tab.
+      return c.json({ error: 'You already have a pending request — wait for an admin to answer it.' }, 409);
+    }
+    return c.json({ request: deps.store.getOrgRequestForUser(userId) }, 201);
+  });
+
+  return api;
+}

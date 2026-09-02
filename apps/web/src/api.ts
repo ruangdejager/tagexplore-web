@@ -2,7 +2,10 @@ import type {
   AuthUser,
   BatterySeries,
   DeviceRow,
+  DiscoveryCountPoint,
+  GpsPoint,
   IngestRunRow,
+  OrgAccessRequestRow,
   OrgTagRow,
   OrganisationRow,
   TagSnapshot,
@@ -10,14 +13,25 @@ import type {
   UserRole,
 } from '@tagexplore/core';
 
-export type { AuthUser, BatterySeries, DeviceRow, OrgTagRow, OrganisationRow, TagSnapshot, UnclaimedTagRow, UserRole };
+export type {
+  AuthUser,
+  BatterySeries,
+  DeviceRow,
+  DiscoveryCountPoint,
+  GpsPoint,
+  OrgAccessRequestRow,
+  OrgTagRow,
+  OrganisationRow,
+  TagSnapshot,
+  UnclaimedTagRow,
+  UserRole,
+};
 
 export interface AdminUserRow {
   id: string;
   username: string;
   role: UserRole;
-  orgId: string | null;
-  orgName: string | null;
+  orgs: Array<{ id: string; name: string }>;
   createdAt: number;
 }
 
@@ -72,6 +86,16 @@ export const fetchSnapshots = (
 ): Promise<{ from: number; to: number; snapshots: TagSnapshot[] }> =>
   request(scoped('/api/snapshots', orgId, { hours }));
 
+export const fetchPositions = (
+  orgId: string | null,
+  hours: number,
+): Promise<{ from: number; to: number; points: GpsPoint[] }> => request(scoped('/api/positions', orgId, { hours }));
+
+export const fetchDiscoveryCounts = (
+  orgId: string | null,
+  limit = 200,
+): Promise<{ counts: DiscoveryCountPoint[] }> => request(scoped('/api/discovery-counts', orgId, { limit }));
+
 export const fetchOrgTags = (orgId: string | null): Promise<{ tags: OrgTagRow[] }> =>
   request(scoped('/api/tags', orgId));
 
@@ -101,8 +125,25 @@ export const deleteOrg = (id: string): Promise<{ ok: true }> =>
 
 export const fetchAdminUsers = (): Promise<{ users: AdminUserRow[] }> => request('/api/admin/users');
 
-export const updateUser = (id: string, patch: { role?: UserRole; orgId?: string | null }): Promise<{ ok: true }> =>
+export const createAdminUser = (
+  username: string,
+  password: string,
+  role: UserRole,
+  orgIds: string[],
+): Promise<{ user: AdminUserRow }> =>
+  request('/api/admin/users', { method: 'POST', ...json({ username, password, role, orgIds }) });
+
+export const updateUser = (id: string, patch: { role: UserRole }): Promise<{ ok: true }> =>
   request(`/api/admin/users/${id}`, { method: 'PATCH', ...json(patch) });
+
+export const addUserOrg = (id: string, orgId: string): Promise<{ ok: true }> =>
+  request(`/api/admin/users/${id}/orgs`, { method: 'POST', ...json({ orgId }) });
+
+export const removeUserOrg = (id: string, orgId: string): Promise<{ ok: true }> =>
+  request(`/api/admin/users/${id}/orgs/${orgId}`, { method: 'DELETE' });
+
+export const setUserPassword = (id: string, password: string): Promise<{ ok: true }> =>
+  request(`/api/admin/users/${id}/password`, { method: 'PATCH', ...json({ password }) });
 
 export const deleteUser = (id: string): Promise<{ ok: true }> =>
   request(`/api/admin/users/${id}`, { method: 'DELETE' });
@@ -150,3 +191,23 @@ export const removeOrgTag = (orgId: string, tagId: string): Promise<{ ok: true }
 
 export const fetchUnclaimedTags = (orgId?: string): Promise<{ tags: UnclaimedTagRow[] }> =>
   request(orgId ? `/api/admin/unclaimed-tags?orgId=${orgId}` : '/api/admin/unclaimed-tags');
+
+export const fetchAdminOrgRequests = (): Promise<{ requests: OrgAccessRequestRow[] }> =>
+  request('/api/admin/org-requests');
+
+export const approveOrgRequest = (id: number): Promise<{ ok: true }> =>
+  request(`/api/admin/org-requests/${id}/approve`, { method: 'POST' });
+
+export const rejectOrgRequest = (id: number): Promise<{ ok: true }> =>
+  request(`/api/admin/org-requests/${id}/reject`, { method: 'POST' });
+
+// --- Account (a logged-in user with no organisation yet) --------------------
+
+export const fetchAccountOrgs = (): Promise<{ orgs: Array<{ id: string; name: string }> }> =>
+  request('/api/account/orgs');
+
+export const fetchMyOrgRequest = (): Promise<{ request: OrgAccessRequestRow | null }> =>
+  request('/api/account/org-request');
+
+export const requestOrgAccess = (orgId: string): Promise<{ request: OrgAccessRequestRow }> =>
+  request('/api/account/org-request', { method: 'POST', ...json({ orgId }) });

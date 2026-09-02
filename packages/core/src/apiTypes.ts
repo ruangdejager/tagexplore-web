@@ -7,21 +7,25 @@
 /**
  * Access levels.
  *
- * `admin` manages organisations, users, devices and each org's tag whitelist.
- * `user` sees only its own organisation's whitelisted tags. The Telegram bot's
- * dev/client split is deliberately not modelled yet — there is no behavioural
- * difference to gate on until the feature set settles — but it lands here as
- * an extra level rather than a new concept when it does.
+ * `client` and `dev` both see only their own organisation's whitelisted tags —
+ * identical access today, kept as separate labels because they're expected to
+ * diverge once the feature set that would separate them exists. `admin` has
+ * that same org-scoped access, plus the admin panel: organisations, users,
+ * devices, whitelists and pending access requests.
  */
-export type UserRole = 'user' | 'admin';
+export type UserRole = 'client' | 'dev' | 'admin';
 
 export interface AuthUser {
   id: string;
   username: string;
   role: UserRole;
-  /** Null only for an admin who hasn't been placed in an organisation. */
-  orgId: string | null;
-  orgName: string | null;
+  /**
+   * Every organisation this account is assigned to — a user can belong to
+   * several. Empty for a non-admin not yet placed in any. An admin's own
+   * membership here is irrelevant: admins see every organisation regardless
+   * of what's listed, this is just their own explicit memberships if any.
+   */
+  orgs: Array<{ id: string; name: string }>;
 }
 
 export interface OrganisationRow {
@@ -74,6 +78,31 @@ export interface UnclaimedTagRow {
   orgName: string | null;
   lastSeenAt: number;
   readingCount: number;
+}
+
+export type OrgAccessRequestStatus = 'pending' | 'approved' | 'rejected';
+
+/** A user's ask to be placed in an organisation, and an admin's answer to it. */
+export interface OrgAccessRequestRow {
+  id: number;
+  userId: string;
+  username: string;
+  orgId: string;
+  orgName: string | null;
+  status: OrgAccessRequestStatus;
+  createdAt: number;
+}
+
+/** One point of a stored GPS fix, for the density heatmap. */
+export interface GpsPoint {
+  lat: number;
+  lon: number;
+}
+
+/** One discovery round's unique-tag count — one row per bracket the org's devices reported at. */
+export interface DiscoveryCountPoint {
+  bracketAt: number;
+  count: number;
 }
 
 /** Latest known state of one tag — one row in the sidebar, one pin on the map. */

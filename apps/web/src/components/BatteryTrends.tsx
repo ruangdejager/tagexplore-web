@@ -1,11 +1,18 @@
-import { useEffect, useMemo, useState } from 'react';
-import type { BatterySeries, OrgTagRow } from '@tagexplore/core';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  BATTERY_GOOD_MIN,
+  BATTERY_LOW_MIN,
+  BATTERY_OK_MIN,
+  BATTERY_COLOR,
+  type BatterySeries,
+  type OrgTagRow,
+} from '@tagexplore/core';
 import * as api from '../api.js';
 
 interface Props {
   orgId: string | null;
   tags: OrgTagRow[];
-  /** Tags the user has switched on. Owned by the parent so the map can add to it. */
+  /** Tags the user has switched on in the chart's own toggle list. */
   selected: Set<string>;
   onToggle: (tagId: string) => void;
   onSelectOnly: (tagIds: string[]) => void;
@@ -55,15 +62,18 @@ export function BatteryTrends({ orgId, tags, selected, onToggle, onSelectOnly }:
   const key = selectedIds.join(',');
 
   useEffect(() => {
-    if (!orgId || selectedIds.length === 0) {
+    if (selectedIds.length === 0 || !orgId) {
       setSeries([]);
       return;
     }
 
+    const rangeFrom = fromDateInput(from, false);
+    const rangeTo = fromDateInput(to, true);
+
     let cancelled = false;
     setLoading(true);
     api
-      .fetchBattery(orgId, fromDateInput(from, false), fromDateInput(to, true), selectedIds)
+      .fetchBattery(orgId, rangeFrom, rangeTo, selectedIds)
       .then((res) => {
         if (cancelled) return;
         setSeries(res.series);
@@ -102,7 +112,6 @@ export function BatteryTrends({ orgId, tags, selected, onToggle, onSelectOnly }:
   return (
     <footer>
       <div className="trend-head">
-        <span className="title">Battery over time</span>
         <div className="trend-controls">
           <label>
             from <input type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)} />
@@ -124,9 +133,18 @@ export function BatteryTrends({ orgId, tags, selected, onToggle, onSelectOnly }:
       </div>
 
       <div className="trend-body">
-        <TrendChart series={series} colorFor={colorFor} />
+        <div className="chart-column">
+          <span className="panel-title chart-title">Battery over time</span>
+          {/* Remounts (and so resets any zoom) whenever the date range changes —
+              a new range is a new view, not a continuation of the old one. */}
+          <TrendChart key={`${from}|${to}`} series={series} colorFor={colorFor} />
+        </div>
         <div className="trend-toggles">
-          {tags.length === 0 && <div className="empty" style={{ padding: '8px 0' }}>No tags on this whitelist yet.</div>}
+          {tags.length === 0 && (
+            <div className="empty" style={{ padding: '8px 0' }}>
+              No tags on this whitelist yet.
+            </div>
+          )}
           {tags.map((tag) => {
             const on = selected.has(tag.tagId);
             const mv = latestByTag.get(tag.tagId);
@@ -155,6 +173,53 @@ const PAD = { top: 10, right: 12, bottom: 20, left: 40 };
 const VIEW = { width: 900, height: 190 };
 
 /**
+ * The Y axis (mV) is fixed, not data-driven — 3350 at the bottom, 4200 at the
+ * top when fully zoomed out — because the point of this chart is to compare a
+ * reading against fleet-wide thresholds, not to auto-fit whatever happened to
+ * be selected. Scrolling zooms it toward the cursor, down to a 100mV window;
+ * it can never see outside [AXIS_LO, AXIS_HI] regardless of zoom or pan.
+ */
+const AXIS_LO = 3350;
+const AXIS_HI = 4200;
+const MAX_SPAN = AXIS_HI - AXIS_LO;
+const MIN_SPAN = 100;
+/** Where the chart opens and what "Reset zoom" returns to — the band most readings actually live in. */
+const DEFAULT_VIEW: [number, number] = [3800, 4000];
+/** Multiplier per wheel notch — keeps zooming feeling steady regardless of trackpad vs. wheel deltas. */
+const ZOOM_FACTOR = 0.85;
+
+/** Fixed reference lines at the app's own battery thresholds, so the chart reads the same as every other battery colour in the app. */
+const THRESHOLD_LINES: Array<{ mv: number; color: string }> = [
+  { mv: BATTERY_LOW_MIN, color: BATTERY_COLOR.critical },
+  { mv: BATTERY_OK_MIN, color: BATTERY_COLOR.ok },
+  { mv: BATTERY_GOOD_MIN, color: BATTERY_COLOR.good },
+];
+
+/** Gridline spacing narrows as the visible span narrows — 200mV at the widest view down to 25mV at the tightest, in round steps. */
+function gridSpacingFor(span: number): number {
+  if (span > 600) return 200;
+  if (span > 300) return 100;
+  if (span > 150) return 50;
+  return 25;
+}
+
+/** Keeps a [min, max] window inside [AXIS_LO, AXIS_HI] by sliding it, not by squashing its span. */
+function clampWindow(min: number, max: number): [number, number] {
+  const span = Math.min(max - min, MAX_SPAN);
+  let newMin = min;
+  let newMax = min + span;
+  if (newMin < AXIS_LO) {
+    newMin = AXIS_LO;
+    newMax = AXIS_LO + span;
+  }
+  if (newMax > AXIS_HI) {
+    newMax = AXIS_HI;
+    newMin = AXIS_HI - span;
+  }
+  return [newMin, newMax];
+}
+
+/**
  * A plain SVG line chart rather than a charting library: the shape needed here
  * is one polyline per series on a shared linear scale, and drawing it directly
  * keeps the bundle small and the styling consistent with the rest of the app.
@@ -167,61 +232,113 @@ function TrendChart({
   series: BatterySeries[];
   colorFor: (tagId: string) => string;
 }): JSX.Element {
-  const points = series.flatMap((s) => s.points);
-  if (points.length === 0) {
-    return (
-      <div className="empty" style={{ padding: '30px 0' }}>
-        Switch a tag on to chart its battery, and set the date range you want to look at.
-      </div>
-    );
-  }
-
-  const minT = Math.min(...points.map((p) => p.t));
-  const maxT = Math.max(...points.map((p) => p.t));
-  const rawMin = Math.min(...points.map((p) => p.mv));
-  const rawMax = Math.max(...points.map((p) => p.mv));
-  // Round the voltage axis out to 50mV steps with a little headroom, so a flat
-  // series does not collapse onto a single line at the top of the box.
-  const minMv = Math.floor((rawMin - 20) / 50) * 50;
-  const maxMv = Math.ceil((rawMax + 20) / 50) * 50;
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const [[viewMin, viewMax], setView] = useState<[number, number]>(DEFAULT_VIEW);
 
   const plotWidth = VIEW.width - PAD.left - PAD.right;
   const plotHeight = VIEW.height - PAD.top - PAD.bottom;
-  const x = (t: number): number => PAD.left + (maxT === minT ? plotWidth / 2 : ((t - minT) / (maxT - minT)) * plotWidth);
-  const y = (mv: number): number => PAD.top + (1 - (mv - minMv) / (maxMv - minMv || 1)) * plotHeight;
+  const y = (mv: number): number => PAD.top + (1 - (mv - viewMin) / (viewMax - viewMin)) * plotHeight;
 
-  const gridLines = 4;
-  const ticks = Array.from({ length: gridLines + 1 }, (_, i) => minMv + ((maxMv - minMv) / gridLines) * i);
+  // Native listener, not onWheel: React attaches wheel handlers passively by
+  // default, which would silently swallow preventDefault and let the page
+  // scroll under the chart while it zoomed.
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el) return;
+
+    const onWheel = (e: WheelEvent): void => {
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      const svgY = ((e.clientY - rect.top) / rect.height) * VIEW.height;
+      const t = Math.min(1, Math.max(0, (svgY - PAD.top) / plotHeight));
+
+      setView(([min, max]) => {
+        const mvUnderCursor = min + (max - min) * (1 - t);
+        const span = Math.min(MAX_SPAN, Math.max(MIN_SPAN, (max - min) * (e.deltaY < 0 ? ZOOM_FACTOR : 1 / ZOOM_FACTOR)));
+        const newMin = mvUnderCursor - span * (1 - t);
+        return clampWindow(newMin, newMin + span);
+      });
+    };
+
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [plotHeight]);
+
+  const points = series.flatMap((s) => s.points);
+  const zoomed = viewMin !== DEFAULT_VIEW[0] || viewMax !== DEFAULT_VIEW[1];
+
+  const spacing = gridSpacingFor(viewMax - viewMin);
+  const ticks: number[] = [];
+  for (let mv = Math.ceil(viewMin / spacing) * spacing; mv <= viewMax; mv += spacing) ticks.push(mv);
+
+  let minT = 0;
+  let maxT = 0;
+  if (points.length > 0) {
+    minT = Math.min(...points.map((p) => p.t));
+    maxT = Math.max(...points.map((p) => p.t));
+  }
+  const x = (t: number): number => PAD.left + (maxT === minT ? plotWidth / 2 : ((t - minT) / (maxT - minT)) * plotWidth);
   const dateLabel = (ms: number): string =>
     new Date(ms).toLocaleDateString('en-ZA', { timeZone: 'Africa/Johannesburg', day: '2-digit', month: 'short' });
 
   return (
-    <svg className="chart" viewBox={`0 0 ${VIEW.width} ${VIEW.height}`} role="img">
-      {ticks.map((mv) => (
-        <g key={mv}>
-          <line className="grid" x1={PAD.left} x2={VIEW.width - PAD.right} y1={y(mv)} y2={y(mv)} opacity={0.5} />
-          <text x={PAD.left - 6} y={y(mv) + 3} textAnchor="end">
-            {Math.round(mv)}
-          </text>
-        </g>
-      ))}
+    <div className="chart-wrap">
+      <svg className="chart" ref={svgRef} viewBox={`0 0 ${VIEW.width} ${VIEW.height}`} role="img">
+        {ticks.map((mv) => (
+          <g key={mv}>
+            <line className="grid" x1={PAD.left} x2={VIEW.width - PAD.right} y1={y(mv)} y2={y(mv)} opacity={0.5} />
+            <text x={PAD.left - 6} y={y(mv) + 3} textAnchor="end">
+              {Math.round(mv)}
+            </text>
+          </g>
+        ))}
 
-      <line className="axis" x1={PAD.left} x2={PAD.left} y1={PAD.top} y2={VIEW.height - PAD.bottom} />
-      <text x={PAD.left} y={VIEW.height - 6}>
-        {dateLabel(minT)}
-      </text>
-      <text x={VIEW.width - PAD.right} y={VIEW.height - 6} textAnchor="end">
-        {dateLabel(maxT)}
-      </text>
+        {THRESHOLD_LINES.filter((t) => t.mv >= viewMin && t.mv <= viewMax).map((t) => (
+          <line
+            key={t.mv}
+            className="threshold"
+            stroke={t.color}
+            x1={PAD.left}
+            x2={VIEW.width - PAD.right}
+            y1={y(t.mv)}
+            y2={y(t.mv)}
+          />
+        ))}
 
-      {series.map((s) => (
-        <polyline
-          key={s.tagId}
-          className="series"
-          stroke={colorFor(s.tagId)}
-          points={s.points.map((p) => `${x(p.t)},${y(p.mv)}`).join(' ')}
-        />
-      ))}
-    </svg>
+        <line className="axis" x1={PAD.left} x2={PAD.left} y1={PAD.top} y2={VIEW.height - PAD.bottom} />
+
+        {points.length > 0 && (
+          <>
+            <text x={PAD.left} y={VIEW.height - 6}>
+              {dateLabel(minT)}
+            </text>
+            <text x={VIEW.width - PAD.right} y={VIEW.height - 6} textAnchor="end">
+              {dateLabel(maxT)}
+            </text>
+          </>
+        )}
+
+        {series.map((s) => (
+          <polyline
+            key={s.tagId}
+            className="series"
+            stroke={colorFor(s.tagId)}
+            points={s.points.map((p) => `${x(p.t)},${y(p.mv)}`).join(' ')}
+          />
+        ))}
+      </svg>
+
+      {points.length === 0 && (
+        <div className="empty chart-empty">
+          Switch a tag on to chart its battery, and set the date range you want to look at.
+        </div>
+      )}
+
+      {zoomed && (
+        <button className="pill chart-reset-zoom" onClick={() => setView(DEFAULT_VIEW)}>
+          Reset zoom
+        </button>
+      )}
+    </div>
   );
 }

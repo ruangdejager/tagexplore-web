@@ -11,16 +11,17 @@ export interface AuthDeps {
   cookieSecure: boolean;
 }
 
-const USERNAME_PATTERN = /^[a-zA-Z0-9_.-]{3,32}$/;
-const MIN_PASSWORD_LENGTH = 8;
+/** Reused by the admin API when it creates an account directly, so both paths agree on what's valid. */
+export const USERNAME_PATTERN = /^[a-zA-Z0-9_.-]{3,32}$/;
+export const MIN_PASSWORD_LENGTH = 8;
 
 /**
- * Role and organisation travel with every auth response, so the client can gate
- * the admin UI and scope its first data request without a second round trip.
+ * Role and organisation memberships travel with every auth response, so the
+ * client can gate the admin UI and populate its own org picker without a
+ * second round trip.
  */
 export function publicUser(store: Store, user: UserRow): AuthUser {
-  const org = user.orgId ? store.getOrg(user.orgId) : null;
-  return { id: user.id, username: user.username, role: user.role, orgId: org?.id ?? null, orgName: org?.name ?? null };
+  return { id: user.id, username: user.username, role: user.role, orgs: store.listOrgsForUser(user.id) };
 }
 
 export function createAuthApi(deps: AuthDeps): Hono {

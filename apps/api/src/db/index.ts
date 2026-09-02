@@ -5,7 +5,10 @@ import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite';
 import type {
   BatterySeries,
   DeviceRow,
+  DiscoveryCountPoint,
+  GpsPoint,
   IngestRunRow,
+  OrgAccessRequestRow,
   OrgTagRow,
   OrganisationRow,
   TagSnapshot,
@@ -38,16 +41,30 @@ CREATE TABLE IF NOT EXISTS organisations (
   created_at  INTEGER NOT NULL
 );
 
+-- org_id is legacy -- a user now belongs to zero or more organisations via
+-- user_orgs below, backfilled from this column on first boot after the
+-- change (see migrateUserOrgs). Left in place rather than dropped: it's dead
+-- weight, but node:sqlite has no clean ALTER TABLE DROP COLUMN path worth the
+-- risk for a column nothing reads or writes any more.
 CREATE TABLE IF NOT EXISTS users (
   id            TEXT PRIMARY KEY,
   username      TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
-  role          TEXT NOT NULL DEFAULT 'user',
+  role          TEXT NOT NULL DEFAULT 'client',
   org_id        TEXT REFERENCES organisations(id) ON DELETE SET NULL,
   created_at    INTEGER NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS users_org ON users(org_id);
+-- A user can be assigned to several organisations (an admin implicitly sees
+-- all of them regardless of what's listed here — this table is about which
+-- organisations a *non-admin* account may pick from).
+CREATE TABLE IF NOT EXISTS user_orgs (
+  user_id  TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  org_id   TEXT NOT NULL REFERENCES organisations(id) ON DELETE CASCADE,
+  PRIMARY KEY (user_id, org_id)
+);
+
+CREATE INDEX IF NOT EXISTS user_orgs_org ON user_orgs(org_id);
 
 CREATE TABLE IF NOT EXISTS sessions (
   id          TEXT PRIMARY KEY,
@@ -57,6 +74,24 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 
 CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
+
+-- A user with no organisation asks to be placed in one; an admin approves or
+-- rejects it. The partial unique index (not a plain UNIQUE on user_id) is what
+-- lets a rejected request be followed by a fresh one, while still stopping a
+-- second pending request from piling up behind the first.
+CREATE TABLE IF NOT EXISTS org_access_requests (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  org_id       TEXT NOT NULL REFERENCES organisations(id) ON DELETE CASCADE,
+  status       TEXT NOT NULL DEFAULT 'pending',
+  created_at   INTEGER NOT NULL,
+  resolved_at  INTEGER,
+  resolved_by  TEXT REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS org_requests_one_pending_per_user
+  ON org_access_requests(user_id) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS org_requests_status ON org_access_requests(status);
 
 -- A reader device, keyed by the IMEI the logs API is addressed with.
 --
@@ -159,7 +194,6 @@ export interface UserRow {
   username: string;
   passwordHash: string;
   role: UserRole;
-  orgId: string | null;
   createdAt: number;
 }
 
@@ -219,6 +253,28 @@ function bootstrapFoundingAdmin(db: DatabaseSyncType, username: string): void {
   db.prepare("UPDATE users SET role = 'admin' WHERE id = ?").run(user.id);
 }
 
+/**
+ * `client` replaced the original role name `user` (now that `dev` exists
+ * alongside it as a second non-admin label) — a one-line data fix for any
+ * database created before the rename, since the schema's own `DEFAULT` only
+ * affects rows inserted from here on.
+ */
+function migrateLegacyUserRole(db: DatabaseSyncType): void {
+  db.exec("UPDATE users SET role = 'client' WHERE role = 'user'");
+}
+
+/**
+ * One-time backfill from the old single `users.org_id` into `user_orgs`, for
+ * a database that predates multi-org membership. `INSERT OR IGNORE` makes
+ * this a no-op on every later boot once the row already exists.
+ */
+function migrateUserOrgs(db: DatabaseSyncType): void {
+  db.exec(`
+    INSERT OR IGNORE INTO user_orgs (user_id, org_id)
+    SELECT id, org_id FROM users WHERE org_id IS NOT NULL
+  `);
+}
+
 function toBool(value: unknown): boolean {
   return Number(value) === 1;
 }
@@ -234,6 +290,8 @@ export class Store {
     this.db.exec('PRAGMA journal_mode = WAL;');
     this.db.exec('PRAGMA foreign_keys = ON;');
     this.db.exec(SCHEMA);
+    migrateLegacyUserRole(this.db);
+    migrateUserOrgs(this.db);
     bootstrapFoundingAdmin(this.db, foundingAdminUsername);
   }
 
@@ -274,7 +332,7 @@ export class Store {
     const rows = this.db
       .prepare(
         `SELECT o.id, o.name, o.created_at,
-                (SELECT COUNT(*) FROM users u WHERE u.org_id = o.id)    AS user_count,
+                (SELECT COUNT(*) FROM user_orgs uo WHERE uo.org_id = o.id) AS user_count,
                 (SELECT COUNT(*) FROM devices d WHERE d.org_id = o.id)  AS device_count,
                 (SELECT COUNT(*) FROM org_tags t WHERE t.org_id = o.id) AS tag_count
          FROM organisations o
@@ -300,10 +358,10 @@ export class Store {
 
   // --- Users ---------------------------------------------------------------
 
-  /** New accounts always start at 'user' with no organisation — an admin places them. */
+  /** New accounts always start at 'client' with no organisation — an admin places them. */
   createUser(id: string, username: string, passwordHash: string): void {
     this.db
-      .prepare("INSERT INTO users (id, username, password_hash, role, org_id, created_at) VALUES (?, ?, ?, 'user', NULL, ?)")
+      .prepare("INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?, ?, ?, 'client', ?)")
       .run(id, username, passwordHash, Date.now());
   }
 
@@ -312,7 +370,6 @@ export class Store {
     username: string;
     password_hash: string;
     role: string;
-    org_id: string | null;
     created_at: number;
   }): UserRow {
     return {
@@ -320,12 +377,11 @@ export class Store {
       username: row.username,
       passwordHash: row.password_hash,
       role: row.role as UserRole,
-      orgId: row.org_id,
       createdAt: row.created_at,
     };
   }
 
-  private static readonly USER_COLUMNS = 'id, username, password_hash, role, org_id, created_at';
+  private static readonly USER_COLUMNS = 'id, username, password_hash, role, created_at';
 
   getUserByUsername(username: string): UserRow | null {
     const row = this.db
@@ -341,28 +397,36 @@ export class Store {
     return row ? Store.toUserRow(row) : null;
   }
 
-  listUsers(): Array<{ id: string; username: string; role: UserRole; orgId: string | null; orgName: string | null; createdAt: number }> {
-    const rows = this.db
-      .prepare(
-        `SELECT u.id, u.username, u.role, u.org_id, o.name AS org_name, u.created_at
-         FROM users u LEFT JOIN organisations o ON o.id = u.org_id
-         ORDER BY u.created_at ASC`,
-      )
-      .all() as Array<{
+  /** For the admin panel: every account, each with the full list of organisations it belongs to. */
+  listUsers(): Array<{ id: string; username: string; role: UserRole; orgs: Array<{ id: string; name: string }>; createdAt: number }> {
+    const users = this.db.prepare('SELECT id, username, role, created_at FROM users ORDER BY created_at ASC').all() as Array<{
       id: string;
       username: string;
       role: string;
-      org_id: string | null;
-      org_name: string | null;
       created_at: number;
     }>;
-    return rows.map((r) => ({
-      id: r.id,
-      username: r.username,
-      role: r.role as UserRole,
-      orgId: r.org_id,
-      orgName: r.org_name,
-      createdAt: r.created_at,
+    const memberships = this.db
+      .prepare(
+        `SELECT uo.user_id, o.id AS org_id, o.name AS org_name
+         FROM user_orgs uo JOIN organisations o ON o.id = uo.org_id
+         ORDER BY o.name COLLATE NOCASE ASC`,
+      )
+      .all() as Array<{ user_id: string; org_id: string; org_name: string }>;
+
+    const orgsByUser = new Map<string, Array<{ id: string; name: string }>>();
+    for (const m of memberships) {
+      const list = orgsByUser.get(m.user_id);
+      const entry = { id: m.org_id, name: m.org_name };
+      if (list) list.push(entry);
+      else orgsByUser.set(m.user_id, [entry]);
+    }
+
+    return users.map((u) => ({
+      id: u.id,
+      username: u.username,
+      role: u.role as UserRole,
+      orgs: orgsByUser.get(u.id) ?? [],
+      createdAt: u.created_at,
     }));
   }
 
@@ -370,8 +434,46 @@ export class Store {
     this.db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, userId);
   }
 
-  setUserOrg(userId: string, orgId: string | null): void {
-    this.db.prepare('UPDATE users SET org_id = ? WHERE id = ?').run(orgId, userId);
+  setUserPassword(userId: string, passwordHash: string): void {
+    this.db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, userId);
+  }
+
+  /** Every organisation this user belongs to — irrelevant for an admin, who sees all of them regardless. */
+  listOrgsForUser(userId: string): Array<{ id: string; name: string }> {
+    return this.db
+      .prepare(
+        `SELECT o.id, o.name FROM user_orgs uo
+         JOIN organisations o ON o.id = uo.org_id
+         WHERE uo.user_id = ? ORDER BY o.name COLLATE NOCASE ASC`,
+      )
+      .all(userId) as Array<{ id: string; name: string }>;
+  }
+
+  userHasOrg(userId: string, orgId: string): boolean {
+    const row = this.db.prepare('SELECT 1 FROM user_orgs WHERE user_id = ? AND org_id = ?').get(userId, orgId);
+    return row !== undefined;
+  }
+
+  addUserOrg(userId: string, orgId: string): void {
+    this.db.prepare('INSERT OR IGNORE INTO user_orgs (user_id, org_id) VALUES (?, ?)').run(userId, orgId);
+  }
+
+  removeUserOrg(userId: string, orgId: string): void {
+    this.db.prepare('DELETE FROM user_orgs WHERE user_id = ? AND org_id = ?').run(userId, orgId);
+  }
+
+  /** Replaces the user's whole set of organisation memberships in one transaction. */
+  setUserOrgs(userId: string, orgIds: string[]): void {
+    this.db.exec('BEGIN');
+    try {
+      this.db.prepare('DELETE FROM user_orgs WHERE user_id = ?').run(userId);
+      const stmt = this.db.prepare('INSERT INTO user_orgs (user_id, org_id) VALUES (?, ?)');
+      for (const orgId of orgIds) stmt.run(userId, orgId);
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
   }
 
   deleteUser(userId: string): void {
@@ -381,6 +483,100 @@ export class Store {
   countAdmins(): number {
     const row = this.db.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'admin'").get() as { n: number };
     return row.n;
+  }
+
+  /** Bare id/name list — what a user with no organisation yet picks a request from. */
+  listOrgNames(): Array<{ id: string; name: string }> {
+    return this.db.prepare('SELECT id, name FROM organisations ORDER BY name COLLATE NOCASE ASC').all() as Array<{
+      id: string;
+      name: string;
+    }>;
+  }
+
+  // --- Organisation access requests -----------------------------------------
+
+  /** Throws (a UNIQUE-constraint error) if this user already has a pending request. */
+  createOrgRequest(userId: string, orgId: string): void {
+    this.db
+      .prepare("INSERT INTO org_access_requests (user_id, org_id, status, created_at) VALUES (?, ?, 'pending', ?)")
+      .run(userId, orgId, Date.now());
+  }
+
+  private static toOrgRequestRow(row: {
+    id: number;
+    user_id: string;
+    username: string;
+    org_id: string;
+    org_name: string | null;
+    status: string;
+    created_at: number;
+  }): OrgAccessRequestRow {
+    return {
+      id: row.id,
+      userId: row.user_id,
+      username: row.username,
+      orgId: row.org_id,
+      orgName: row.org_name,
+      status: row.status as OrgAccessRequestRow['status'],
+      createdAt: row.created_at,
+    };
+  }
+
+  private static readonly ORG_REQUEST_SELECT = `
+    SELECT r.id, r.user_id, u.username, r.org_id, o.name AS org_name, r.status, r.created_at
+    FROM org_access_requests r
+    JOIN users u ON u.id = r.user_id
+    LEFT JOIN organisations o ON o.id = r.org_id`;
+
+  /** For the admin queue — every request still awaiting a decision. */
+  listPendingOrgRequests(): OrgAccessRequestRow[] {
+    const rows = this.db
+      .prepare(`${Store.ORG_REQUEST_SELECT} WHERE r.status = 'pending' ORDER BY r.created_at ASC`)
+      .all() as Array<Parameters<typeof Store.toOrgRequestRow>[0]>;
+    return rows.map(Store.toOrgRequestRow);
+  }
+
+  /** For the requesting user's own screen — so a pending ask shows as pending, not as nothing. */
+  getOrgRequestForUser(userId: string): OrgAccessRequestRow | null {
+    const row = this.db
+      .prepare(`${Store.ORG_REQUEST_SELECT} WHERE r.user_id = ? ORDER BY r.created_at DESC LIMIT 1`)
+      .get(userId) as Parameters<typeof Store.toOrgRequestRow>[0] | undefined;
+    return row ? Store.toOrgRequestRow(row) : null;
+  }
+
+  getOrgRequest(id: number): OrgAccessRequestRow | null {
+    const row = this.db.prepare(`${Store.ORG_REQUEST_SELECT} WHERE r.id = ?`).get(id) as
+      | Parameters<typeof Store.toOrgRequestRow>[0]
+      | undefined;
+    return row ? Store.toOrgRequestRow(row) : null;
+  }
+
+  /** Approving also places the user in the org, in one transaction — the two must never disagree. */
+  approveOrgRequest(id: number, resolvedBy: string): void {
+    const request = this.db.prepare('SELECT user_id, org_id FROM org_access_requests WHERE id = ?').get(id) as
+      | { user_id: string; org_id: string }
+      | undefined;
+    if (!request) throw new Error(`No org request with id ${id}`);
+
+    this.db.exec('BEGIN');
+    try {
+      this.db
+        .prepare("UPDATE org_access_requests SET status = 'approved', resolved_at = ?, resolved_by = ? WHERE id = ?")
+        .run(Date.now(), resolvedBy, id);
+      // Adds to the user's memberships — approving one request never removes
+      // another organisation they already belong to.
+      this.db.prepare('INSERT OR IGNORE INTO user_orgs (user_id, org_id) VALUES (?, ?)').run(request.user_id, request.org_id);
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
+  rejectOrgRequest(id: number, resolvedBy: string): void {
+    this.db
+      .prepare("UPDATE org_access_requests SET status = 'rejected', resolved_at = ?, resolved_by = ? WHERE id = ?")
+      .run(Date.now(), resolvedBy, id);
   }
 
   // --- Sessions ------------------------------------------------------------
@@ -650,6 +846,48 @@ export class Store {
       throw err;
     }
     return readings.length;
+  }
+
+  /**
+   * Every GPS-carrying reading for the organisation's whitelisted tags in the
+   * window — raw points, one per fix, for a density heatmap. Unlike
+   * `tagSnapshots` this deliberately does not collapse to "latest per tag": the
+   * whole point of a heatmap is to show where a tag has actually been.
+   */
+  gpsPoints({ orgId, from, to }: ReadingWindow): GpsPoint[] {
+    const rows = this.db
+      .prepare(
+        `SELECT r.lat, r.lon FROM readings r
+           JOIN devices d ON d.imei = r.device_imei
+          WHERE d.org_id = ? AND r.bracket_at BETWEEN ? AND ? AND r.has_gps = 1
+            AND EXISTS (SELECT 1 FROM org_tags t WHERE t.org_id = d.org_id AND t.tag_id = r.tag_id)`,
+      )
+      .all(orgId, from, to) as Array<{ lat: number; lon: number }>;
+    return rows;
+  }
+
+  /**
+   * Unique-tag count per discovery round — one row per bracket any of the
+   * org's devices reported at, newest first. `count` is deduped across
+   * devices (a tag two readers both heard in the same round counts once),
+   * unlike `rounds.tag_count` which is per-device. The most recent row is
+   * "the latest discovery"; the rest is what the count-history list scrolls
+   * through.
+   */
+  listDiscoveryCounts(orgId: string, limit = 200): DiscoveryCountPoint[] {
+    const rows = this.db
+      .prepare(
+        `SELECT r.bracket_at AS bracket_at, COUNT(DISTINCT r.tag_id) AS count
+           FROM readings r
+           JOIN devices d ON d.imei = r.device_imei
+          WHERE d.org_id = ?
+            AND EXISTS (SELECT 1 FROM org_tags t WHERE t.org_id = d.org_id AND t.tag_id = r.tag_id)
+          GROUP BY r.bracket_at
+          ORDER BY r.bracket_at DESC
+          LIMIT ?`,
+      )
+      .all(orgId, limit) as Array<{ bracket_at: number; count: number }>;
+    return rows.map((r) => ({ bracketAt: r.bracket_at, count: r.count }));
   }
 
   /** The most recent bracket this device has any reading for, or null if it has never reported. */

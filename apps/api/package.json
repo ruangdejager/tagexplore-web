@@ -6,7 +6,7 @@
   "description": "Hono API: Farmranger log ingest, tag/battery queries, org-device-tag administration.",
   "main": "./dist/index.js",
   "scripts": {
-    "dev": "tsx watch --env-file-if-exists=../../.env --no-warnings=ExperimentalWarning src/index.ts",
+    "dev": "node --env-file-if-exists=../../.env --no-warnings=ExperimentalWarning --import tsx/esm --watch src/index.ts",
     "build": "tsup",
     "start": "node --env-file-if-exists=.env --no-warnings=ExperimentalWarning dist/index.js",
     "typecheck": "tsc --noEmit"

@@ -40,13 +40,23 @@ export interface Config {
   pollLookbackHours: number;
   /** Discovery timestamps round to the nearest bracket of this many minutes. */
   bracketMinutes: number;
-  /** The account that is force-promoted to admin on every boot. */
+  /**
+   * The account that is force-promoted to admin on every boot — and, if it
+   * doesn't exist yet (a fresh database, e.g. a new Railway deploy), created
+   * with this password. Once the account exists, its password is never
+   * touched here again.
+   */
   foundingAdminUsername: string;
+  foundingAdminPassword: string;
 }
 
 export function loadConfig(): Config {
   const dataDir = resolve(process.env['DATA_DIR'] ?? './data');
-  const port = num(process.env['PORT'], 8787);
+  // Read API_PORT first, not the generic PORT: the browser-preview harness sets
+  // PORT to whatever it is proxying to (the Vite dev server's port), and since
+  // concurrently shares one environment across core/api/web, a bare PORT here
+  // would silently steal that port from the API process instead of Vite.
+  const port = num(process.env['API_PORT'] ?? process.env['PORT'], 8787);
 
   return {
     port,
@@ -66,5 +76,6 @@ export function loadConfig(): Config {
     pollLookbackHours: num(process.env['POLL_LOOKBACK_HOURS'], 4),
     bracketMinutes: num(process.env['BRACKET_MINUTES'], 15),
     foundingAdminUsername: process.env['FOUNDING_ADMIN_USERNAME'] ?? 'ruandj',
+    foundingAdminPassword: process.env['FOUNDING_ADMIN_PASSWORD'] ?? 'Rdj@5046',
   };
 }

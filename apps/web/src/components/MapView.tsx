@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import L from 'leaflet';
-import { ageColor, type TagSnapshot } from '@tagexplore/core';
+import 'leaflet.heat';
+import { AGE_COLOR, ageColor, type GpsPoint, type TagSnapshot } from '@tagexplore/core';
+
+/** What a marker's fill colour means — picked by clicking one of the two legends. */
+export type MarkerColorMode = 'age' | 'latestGps';
 
 interface Props {
   snapshots: TagSnapshot[];
@@ -13,6 +17,15 @@ interface Props {
   /** Changes when the underlying set of tags does (a different organisation),
    *  which is when the view should frame itself again without being asked. */
   autoFitKey: string | null;
+  /** Density view instead of per-tag markers — the two are mutually exclusive. */
+  heatmapView: boolean;
+  heatPoints: GpsPoint[];
+  colorMode: MarkerColorMode;
+}
+
+/** True when the tag's most recent reading — not just some earlier one — carried a GPS fix. */
+function hasFreshGps(tag: TagSnapshot): boolean {
+  return tag.fixAt !== null && tag.fixAt === tag.lastSeenAt;
 }
 
 /**
@@ -24,6 +37,16 @@ const MAX_ZOOM = { Satellite: 17, Terrain: 19 } as const;
 type BaseName = keyof typeof MAX_ZOOM;
 
 const SOUTH_AFRICA: L.LatLngExpression = [-28.8, 24.5];
+
+/**
+ * Tuned so a handful of nearby fixes only ever look faint, and it takes a real
+ * cluster to reach red — not two or three overlapping points. `radius` is kept
+ * small for fine spatial resolution (a coarse blob hides exactly the density
+ * differences this view exists to show); `max` is the density level mapped to
+ * full intensity, and is set well above what a lightly-visited spot reaches, so
+ * only genuinely dense areas climb the gradient toward red.
+ */
+const HEATMAP_OPTIONS: L.HeatMapOptions = { radius: 12, blur: 10, max: 14, minOpacity: 0.08 };
 
 function createBaseLayers(): Record<BaseName, L.TileLayer> {
   return {
@@ -38,11 +61,22 @@ function createBaseLayers(): Record<BaseName, L.TileLayer> {
   };
 }
 
-export function MapView({ snapshots, selectedTagId, onSelect, fitNonce, autoFitKey, children }: Props): JSX.Element {
+export function MapView({
+  snapshots,
+  selectedTagId,
+  onSelect,
+  fitNonce,
+  autoFitKey,
+  heatmapView,
+  heatPoints,
+  colorMode,
+  children,
+}: Props): JSX.Element {
   const container = useRef<HTMLDivElement | null>(null);
   const map = useRef<L.Map | null>(null);
   const bases = useRef<Record<BaseName, L.TileLayer> | null>(null);
   const markers = useRef<L.LayerGroup | null>(null);
+  const heat = useRef<L.HeatLayer | null>(null);
   const byTag = useRef(new Map<string, L.CircleMarker>());
   const fittedKey = useRef<string | null>(null);
   const [baseName, setBaseName] = useState<BaseName>('Satellite');
@@ -81,6 +115,7 @@ export function MapView({ snapshots, selectedTagId, onSelect, fitNonce, autoFitK
     map.current = instance;
     bases.current = layers;
     markers.current = L.layerGroup().addTo(instance);
+    // heat.current is created lazily — see the heatmapView effect below.
 
     // The grid settles its own size after the first paint; without this the map
     // renders into a zero-height box and stays blank.
@@ -126,11 +161,13 @@ export function MapView({ snapshots, selectedTagId, onSelect, fitNonce, autoFitK
 
     for (const tag of snapshots) {
       if (tag.lat === null || tag.lon === null) continue;
+      const fillColor =
+        colorMode === 'age' ? ageColor(tag.fixAt, now) : hasFreshGps(tag) ? AGE_COLOR.live : AGE_COLOR.none;
       const marker = L.circleMarker([tag.lat, tag.lon], {
         radius: 7,
         color: '#12140F',
         weight: 1.5,
-        fillColor: ageColor(tag.fixAt, now),
+        fillColor,
         fillOpacity: 0.95,
       });
       marker.on('click', () => onSelect(tag.tagId));
@@ -138,7 +175,32 @@ export function MapView({ snapshots, selectedTagId, onSelect, fitNonce, autoFitK
       marker.addTo(group);
       byTag.current.set(tag.tagId, marker);
     }
-  }, [snapshots, onSelect]);
+  }, [snapshots, onSelect, colorMode]);
+
+  // The two views are mutually exclusive: markers for individual tags, or a
+  // density cloud of every raw fix — never both at once. The heat layer is
+  // fully recreated (not updated in place) on every relevant change: reusing
+  // one instance across a quick add/remove/add cycle left leaflet.heat's own
+  // event listeners referencing a map it had just been detached from, which
+  // crashed on the next redraw. A fresh instance has no stale listeners.
+  useEffect(() => {
+    const instance = map.current;
+    const markerLayer = markers.current;
+    if (!instance || !markerLayer) return;
+
+    if (heat.current) {
+      instance.removeLayer(heat.current);
+      heat.current = null;
+    }
+
+    if (heatmapView) {
+      if (instance.hasLayer(markerLayer)) instance.removeLayer(markerLayer);
+      const points = heatPoints.map((p): [number, number, number] => [p.lat, p.lon, 1]);
+      heat.current = L.heatLayer(points, HEATMAP_OPTIONS).addTo(instance);
+    } else if (!instance.hasLayer(markerLayer)) {
+      markerLayer.addTo(instance);
+    }
+  }, [heatmapView, heatPoints]);
 
   // Selection is a style change on the existing markers, so picking a tag from
   // the sidebar does not rebuild the layer or disturb the view.

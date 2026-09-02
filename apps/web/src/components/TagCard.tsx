@@ -18,7 +18,7 @@ interface Props {
   onShowTrend: (tagId: string) => void;
 }
 
-const MOVEMENT: Record<number, string> = { 0: 'still', 1: 'moving' };
+const MOVEMENT: Record<number, string> = { 0: 'moving', 1: 'still' };
 
 function timestamp(ms: number): string {
   // Johannesburg time, because that is the clock the devices and the people

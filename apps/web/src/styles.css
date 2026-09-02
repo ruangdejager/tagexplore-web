@@ -221,6 +221,45 @@ aside {
   opacity: 0.75;
 }
 
+/* A user's organisation memberships: a chip per org with its own × to remove,
+   plus a dropdown below to add one more — replaces a ctrl/cmd-click multi
+   select that nobody found on their own. */
+.org-chip-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 160px;
+}
+.org-chip-picker .chips {
+  min-height: 22px;
+}
+.org-chip-none {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-dim);
+  opacity: 0.7;
+}
+.org-chip {
+  font-family: var(--mono);
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 11.5px;
+  padding: 3px 4px 3px 8px;
+}
+.org-chip button {
+  color: var(--ink-dim);
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px 4px;
+}
+.org-chip button:hover {
+  color: var(--alert);
+}
+.org-chip-picker select {
+  font-size: 11.5px;
+  padding: 3px 6px;
+}
+
 .filters input[type='search'] {
   width: 100%;
   font-family: var(--mono);
@@ -249,7 +288,7 @@ aside {
 
 .row {
   display: grid;
-  grid-template-columns: 3px 1fr auto;
+  grid-template-columns: auto 3px 1fr auto;
   gap: 10px;
   align-items: center;
   padding: 9px 16px 9px 13px;
@@ -265,6 +304,21 @@ aside {
 .bar {
   height: 30px;
   border-radius: 2px;
+}
+.row-visibility {
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--ink-dim);
+  border-radius: 2px;
+  flex: none;
+  padding: 0;
+}
+.row-visibility[data-on='1'] {
+  background: var(--ink-dim);
+  border-color: var(--ink-dim);
+}
+.row-visibility[data-on='0'] {
+  background: transparent;
 }
 .row .sn {
   font-family: var(--mono);
@@ -301,6 +355,18 @@ aside {
   padding: 28px 16px;
   color: var(--ink-dim);
   font-size: 13px;
+  line-height: 1.5;
+}
+
+.demo-banner {
+  margin: 0 16px 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--warn);
+  border-radius: 2px;
+  background: rgba(233, 174, 47, 0.1);
+  color: var(--warn);
+  font-family: var(--mono);
+  font-size: 11px;
   line-height: 1.5;
 }
 
@@ -351,17 +417,49 @@ main {
   line-height: 1.5;
 }
 
-.card {
+/* Positioned by their wrapper, .map-topleft, not by themselves — that is what
+   lets the count panel and the tag card stack in the map's top-left corner. */
+.map-topleft {
   position: absolute;
   left: 14px;
   top: 14px;
   z-index: 500;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: calc(100% - 28px);
+}
+
+.card {
   width: 272px;
   background: rgba(27, 30, 23, 0.94);
   border: 1px solid var(--line);
   border-radius: 3px;
   padding: 12px 14px;
   backdrop-filter: blur(6px);
+}
+.count-panel select {
+  width: 100%;
+  font-size: 12px;
+}
+.count-history {
+  margin-top: 8px;
+  max-height: 160px;
+  overflow-y: auto;
+  border-top: 1px solid var(--line);
+  padding-top: 6px;
+}
+.count-history-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-dim);
+  padding: 3px 0;
+}
+.count-history-row span:last-child {
+  color: var(--ink);
 }
 .card h3 {
   margin: 0;
@@ -409,11 +507,44 @@ main {
   line-height: 1;
 }
 
-.legend {
+/* Collapsed by default to a single line — the header is the whole hit target
+   for expanding it, and the panel itself is absent from the DOM (not just
+   hidden) whenever there is nothing to report. */
+.alerts-card {
+  padding: 10px 14px;
+}
+.alerts-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+}
+.alerts-card .alerts-list {
+  margin-top: 10px;
+  max-height: 190px;
+}
+.chevron {
+  margin-left: auto;
+  color: var(--ink-dim);
+  font-size: 11px;
+}
+
+.legend-stack {
   position: absolute;
   right: 14px;
   bottom: 14px;
   z-index: 500;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-end;
+}
+/* Each legend is also the button that picks it as the map's colour mode —
+   the inactive one stays visible but greyed out rather than disappearing,
+   so it still explains itself even while it isn't driving the markers. */
+.legend {
+  width: 150px;
   background: rgba(27, 30, 23, 0.9);
   border: 1px solid var(--line);
   border-radius: 3px;
@@ -423,7 +554,20 @@ main {
   color: var(--ink-dim);
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
   gap: 5px;
+  text-align: left;
+  transition: opacity 0.15s, filter 0.15s;
+}
+.legend[data-active='1'] {
+  border-color: var(--ink-dim);
+}
+.legend[data-active='0'] {
+  opacity: 0.65;
+  filter: grayscale(0.6);
+}
+.legend[data-active='0']:hover {
+  opacity: 0.85;
 }
 .legend i {
   display: inline-block;
@@ -450,12 +594,34 @@ footer {
   gap: 14px;
   flex-wrap: wrap;
 }
-.trend-head span.title {
+/* Shared by the footer's top-level title (Alerts) and the small label right
+   above the chart (Battery over time) — same size wherever it's used. */
+.panel-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-family: var(--display);
   letter-spacing: 0.14em;
   text-transform: uppercase;
   font-size: 12px;
   color: var(--ink-dim);
+}
+/* The alerts section's little logo — a plain "!" badge, not a warning-count. */
+.alert-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--alert);
+  color: var(--bg);
+  font-family: var(--body);
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: 0;
+  text-transform: none;
+  flex: none;
 }
 .trend-controls {
   display: flex;
@@ -473,12 +639,60 @@ footer {
 }
 
 .trend-body {
-  display: grid;
-  grid-template-columns: 1fr 210px;
+  display: flex;
   gap: 14px;
+  min-width: 0;
   margin-top: 8px;
 }
+/* Title and chart share this column and nothing else, so the title's own
+   width is exactly the chart's rendered width — a percentage padding on it
+   lines up with a fixed point *inside* the SVG's viewBox (the chart's own
+   y-axis line) the same way at any panel width. */
+.chart-column {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+/* Matches TrendChart's own PAD.left / VIEW.width (40 / 900) — keep in sync
+   with those constants in BatteryTrends.tsx if either one changes. */
+.chart-title {
+  padding-left: calc(100% * 40 / 900);
+}
+.chart-column .chart-wrap {
+  width: 100%;
+}
+.alerts-list {
+  flex: 1;
+  overflow-y: auto;
+  max-height: 190px;
+}
+.alert-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: baseline;
+  padding: 5px 8px;
+  border-left: 2px solid var(--alert);
+  background: rgba(193, 54, 21, 0.08);
+  border-radius: 0 2px 2px 0;
+  margin-bottom: 4px;
+  font-size: 11.5px;
+}
+.alert-tag {
+  font-family: var(--mono);
+  color: var(--ink);
+  white-space: nowrap;
+}
+.alert-message {
+  color: var(--alert);
+  text-align: right;
+  white-space: nowrap;
+}
 .trend-toggles {
+  width: 210px;
+  flex: none;
   max-height: 190px;
   overflow-y: auto;
   display: flex;
@@ -522,6 +736,9 @@ footer {
   opacity: 0.8;
 }
 
+.chart-wrap {
+  position: relative;
+}
 .chart {
   /* The viewBox is 900x190; matching the aspect ratio here keeps the labels
      from being stretched sideways as the panel widens. */
@@ -530,6 +747,9 @@ footer {
   max-height: 190px;
   aspect-ratio: 900 / 190;
   display: block;
+  /* The wheel handler owns scroll here (it zooms instead), so the page must
+     not also try to scroll the same gesture. */
+  touch-action: none;
 }
 .chart text {
   font-family: var(--mono);
@@ -544,14 +764,53 @@ footer {
   stroke: var(--line);
   stroke-width: 1;
 }
+.chart .threshold {
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  opacity: 0.8;
+}
 .chart .series {
   fill: none;
   stroke-width: 1.6;
   stroke-linejoin: round;
   stroke-linecap: round;
 }
+.chart-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 0 20px;
+  pointer-events: none;
+}
+.chart-reset-zoom {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  font-size: 10px;
+  padding: 3px 7px;
+  background: rgba(27, 30, 23, 0.85);
+}
 
 /* --- Modals ---------------------------------------------------------------- */
+
+/* The whole screen for anyone not signed in — no map, no demo data behind it. */
+.login-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+}
+.login-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 26px 26px 22px;
+  width: 320px;
+}
 
 .modal-overlay {
   position: fixed;
@@ -781,12 +1040,14 @@ footer {
   main {
     grid-row: 2;
   }
-  .card {
-    width: auto;
+  .map-topleft {
     right: 14px;
   }
+  .card {
+    width: auto;
+  }
   .trend-body {
-    grid-template-columns: 1fr;
+    flex-direction: column;
   }
 }
 

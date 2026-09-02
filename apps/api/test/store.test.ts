@@ -240,3 +240,87 @@ describe('devices', () => {
     expect(store.latestBracketFor(SECOND_DEVICE)).toBeNull();
   });
 });
+
+describe('gpsPoints', () => {
+  it('returns one point per GPS-carrying reading, not one per tag', () => {
+    store.addOrgTags(ORG, ['3E1E']);
+    store.writeReadings(
+      [
+        reading({ bracketAt: T0 - 2 * HOUR, tagId: '3E1E', lat: -33.96, lon: 18.83, hasGps: true }),
+        reading({ bracketAt: T0 - HOUR, tagId: '3E1E', lat: -33.961, lon: 18.831, hasGps: true }),
+        reading({ bracketAt: T0, tagId: '3E1E', hasGps: false }),
+      ],
+      [],
+    );
+
+    const points = store.gpsPoints({ orgId: ORG, from: T0 - 24 * HOUR, to: T0 });
+    expect(points).toHaveLength(2);
+  });
+
+  it('excludes tags not on the whitelist and readings from another organisation', () => {
+    store.addOrgTags(ORG, ['3E1E']);
+    store.writeReadings(
+      [
+        reading({ bracketAt: T0, tagId: '3E1E', lat: -33.96, lon: 18.83, hasGps: true }),
+        reading({ bracketAt: T0, tagId: '441F', lat: -33.97, lon: 18.84, hasGps: true }),
+        reading({ bracketAt: T0, tagId: '3E1E', deviceImei: OTHER_DEVICE, lat: -1, lon: -1, hasGps: true }),
+      ],
+      [],
+    );
+
+    const points = store.gpsPoints({ orgId: ORG, from: T0 - HOUR, to: T0 + HOUR });
+    expect(points).toEqual([{ lat: -33.96, lon: 18.83 }]);
+  });
+});
+
+describe('listDiscoveryCounts', () => {
+  it('counts distinct tags per bracket, deduped across the org’s devices', () => {
+    store.addOrgTags(ORG, ['3E1E', '441F']);
+    store.writeReadings(
+      [
+        // Round 1: two devices both heard 3E1E — one tag, not two.
+        reading({ bracketAt: T0 - HOUR, tagId: '3E1E', deviceImei: DEVICE }),
+        reading({ bracketAt: T0 - HOUR, tagId: '3E1E', deviceImei: SECOND_DEVICE }),
+        // Round 2: both tags.
+        reading({ bracketAt: T0, tagId: '3E1E' }),
+        reading({ bracketAt: T0, tagId: '441F' }),
+      ],
+      [],
+    );
+
+    const counts = store.listDiscoveryCounts(ORG);
+    expect(counts).toEqual([
+      { bracketAt: T0, count: 2 },
+      { bracketAt: T0 - HOUR, count: 1 },
+    ]);
+  });
+
+  it('ignores tags not on the whitelist and rounds from another organisation', () => {
+    store.addOrgTags(ORG, ['3E1E']);
+    store.addOrgTags(OTHER_ORG, ['3E1E']);
+    store.writeReadings(
+      [
+        reading({ bracketAt: T0, tagId: '3E1E' }),
+        reading({ bracketAt: T0, tagId: '441F' }), // not whitelisted
+        reading({ bracketAt: T0, tagId: '3E1E', deviceImei: OTHER_DEVICE }), // other org
+      ],
+      [],
+    );
+
+    expect(store.listDiscoveryCounts(ORG)).toEqual([{ bracketAt: T0, count: 1 }]);
+  });
+
+  it('respects the limit, newest first', () => {
+    store.addOrgTags(ORG, ['3E1E']);
+    store.writeReadings(
+      [
+        reading({ bracketAt: T0 - 2 * HOUR, tagId: '3E1E' }),
+        reading({ bracketAt: T0 - HOUR, tagId: '3E1E' }),
+        reading({ bracketAt: T0, tagId: '3E1E' }),
+      ],
+      [],
+    );
+
+    expect(store.listDiscoveryCounts(ORG, 2).map((c) => c.bracketAt)).toEqual([T0, T0 - HOUR]);
+  });
+});

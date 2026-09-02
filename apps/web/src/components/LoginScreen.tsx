@@ -1,36 +1,45 @@
 import { useState } from 'react';
+import type { useAuth } from '../state/useAuth.js';
 
 interface Props {
-  mode: 'login' | 'signup';
-  error: string | null;
-  onModeChange: (mode: 'login' | 'signup') => void;
-  onSubmit: (username: string, password: string) => Promise<boolean>;
-  onClose: () => void;
+  auth: ReturnType<typeof useAuth>;
 }
 
-/** Username and password only — no email to reserve, and no reset flow that
- *  would need one to work. */
-export function AuthModal({ mode, error, onModeChange, onSubmit, onClose }: Props): JSX.Element {
+/**
+ * The whole screen for anyone not signed in — there is no demo view to browse
+ * first. Username and password only: no email to reserve, and no reset flow
+ * that would need one to work.
+ */
+export function LoginScreen({ auth }: Props): JSX.Element {
+  const [mode, setMode] = useState<'login' | 'signup'>('login');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
 
+  const changeMode = (next: 'login' | 'signup'): void => {
+    auth.clearError();
+    setMode(next);
+  };
+
   const handleSubmit = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault();
     setBusy(true);
-    const ok = await onSubmit(username, password);
+    await (mode === 'login' ? auth.login(username, password) : auth.signup(username, password));
     setBusy(false);
-    if (ok) onClose();
   };
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+    <div className="login-screen">
+      <div className="login-card">
+        <div className="mark" style={{ marginBottom: 18 }}>
+          Tag<span>·</span>Explore
+        </div>
+
         <div className="modal-tabs">
-          <button type="button" className={mode === 'login' ? 'active' : ''} onClick={() => onModeChange('login')}>
+          <button type="button" className={mode === 'login' ? 'active' : ''} onClick={() => changeMode('login')}>
             Log in
           </button>
-          <button type="button" className={mode === 'signup' ? 'active' : ''} onClick={() => onModeChange('signup')}>
+          <button type="button" className={mode === 'signup' ? 'active' : ''} onClick={() => changeMode('signup')}>
             Sign up
           </button>
         </div>
@@ -66,7 +75,7 @@ export function AuthModal({ mode, error, onModeChange, onSubmit, onClose }: Prop
               At least 8 characters. A new account can see nothing until an admin puts it in an organisation.
             </p>
           )}
-          {error && <p className="modal-error">{error}</p>}
+          {auth.error && <p className="modal-error">{auth.error}</p>}
 
           <button type="submit" className="button-primary" disabled={busy} style={{ width: '100%' }}>
             {busy ? 'Working…' : mode === 'login' ? 'Log in' : 'Create account'}

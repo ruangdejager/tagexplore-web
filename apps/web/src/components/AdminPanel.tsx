@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useState } from 'react';
 import { describeSchedule, formatAge, formatMinuteOfDay, parseMinuteOfDay, shortDeviceId } from '@tagexplore/core';
 import * as api from '../api.js';
-import type { AdminUserRow, DeviceRow, OrgTagRow, OrganisationRow, UnclaimedTagRow, UserRole } from '../api.js';
+import type {
+  AdminUserRow,
+  DeviceRow,
+  OrgAccessRequestRow,
+  OrgTagRow,
+  OrganisationRow,
+  UnclaimedTagRow,
+  UserRole,
+} from '../api.js';
 
 interface Props {
   currentUserId: string;
@@ -10,16 +18,17 @@ interface Props {
   onDataChanged: () => void;
 }
 
-type Tab = 'orgs' | 'users' | 'devices' | 'tags';
+type Tab = 'orgs' | 'users' | 'devices' | 'tags' | 'requests';
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: 'orgs', label: 'Organisations' },
   { id: 'users', label: 'Users' },
   { id: 'devices', label: 'Devices' },
   { id: 'tags', label: 'Tags' },
+  { id: 'requests', label: 'Requests' },
 ];
 
-const ROLES: UserRole[] = ['user', 'admin'];
+const ROLES: UserRole[] = ['client', 'dev', 'admin'];
 
 function seenLabel(ms: number | null): string {
   return ms === null ? 'never' : `${formatAge(Date.now() - ms)} ago`;
@@ -28,6 +37,7 @@ function seenLabel(ms: number | null): string {
 export function AdminPanel({ currentUserId, onClose, onDataChanged }: Props): JSX.Element {
   const [tab, setTab] = useState<Tab>('orgs');
   const [orgs, setOrgs] = useState<OrganisationRow[]>([]);
+  const [pendingRequestCount, setPendingRequestCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -40,6 +50,15 @@ export function AdminPanel({ currentUserId, onClose, onDataChanged }: Props): JS
 
   useEffect(loadOrgs, [loadOrgs]);
 
+  const loadPendingCount = useCallback(() => {
+    api
+      .fetchAdminOrgRequests()
+      .then((res) => setPendingRequestCount(res.requests.length))
+      .catch(() => setPendingRequestCount(0));
+  }, []);
+
+  useEffect(loadPendingCount, [loadPendingCount]);
+
   /** Every mutating call in this panel funnels through here, so one place owns
    *  error reporting, the success notice, and telling the map to reload. */
   const run = useCallback(
@@ -50,12 +69,13 @@ export function AdminPanel({ currentUserId, onClose, onDataChanged }: Props): JS
         await action();
         if (message) setNotice(message);
         loadOrgs();
+        loadPendingCount();
         onDataChanged();
       } catch (err) {
         setError(err instanceof Error ? err.message : 'That did not work.');
       }
     },
-    [loadOrgs, onDataChanged],
+    [loadOrgs, loadPendingCount, onDataChanged],
   );
 
   return (
@@ -73,6 +93,7 @@ export function AdminPanel({ currentUserId, onClose, onDataChanged }: Props): JS
           {TABS.map((t) => (
             <button key={t.id} className="pill" data-on={tab === t.id ? '1' : '0'} onClick={() => setTab(t.id)}>
               {t.label}
+              {t.id === 'requests' && pendingRequestCount > 0 ? ` (${pendingRequestCount})` : ''}
             </button>
           ))}
         </div>
@@ -84,6 +105,7 @@ export function AdminPanel({ currentUserId, onClose, onDataChanged }: Props): JS
         {tab === 'users' && <UsersTab orgs={orgs} currentUserId={currentUserId} run={run} />}
         {tab === 'devices' && <DevicesTab orgs={orgs} run={run} />}
         {tab === 'tags' && <TagsTab orgs={orgs} run={run} />}
+        {tab === 'requests' && <RequestsTab run={run} />}
       </div>
     </div>
   );
@@ -167,6 +189,58 @@ function OrgsTab({ orgs, run }: { orgs: OrganisationRow[]; run: Run }): JSX.Elem
 
 // --- Users ------------------------------------------------------------------
 
+/**
+ * A user's organisation memberships as removable chips plus a one-at-a-time
+ * "add" dropdown — the multi-select this replaced needed a ctrl/cmd-click to
+ * do anything, which nobody discovers on their own.
+ */
+function OrgChipPicker({
+  orgs,
+  selectedIds,
+  onAdd,
+  onRemove,
+}: {
+  orgs: OrganisationRow[];
+  selectedIds: string[];
+  onAdd: (orgId: string) => void;
+  onRemove: (orgId: string) => void;
+}): JSX.Element {
+  const nameFor = (id: string): string => orgs.find((o) => o.id === id)?.name ?? id;
+  const remaining = orgs.filter((o) => !selectedIds.includes(o.id));
+
+  return (
+    <div className="org-chip-picker">
+      <div className="chips">
+        {selectedIds.length === 0 && <span className="org-chip-none">no organisations</span>}
+        {selectedIds.map((id) => (
+          <span key={id} className="chip org-chip">
+            {nameFor(id)}
+            <button type="button" aria-label={`Remove ${nameFor(id)}`} onClick={() => onRemove(id)}>
+              ×
+            </button>
+          </span>
+        ))}
+      </div>
+      {remaining.length > 0 && (
+        <select
+          value=""
+          onChange={(e) => {
+            if (e.target.value) onAdd(e.target.value);
+            e.target.value = '';
+          }}
+        >
+          <option value="">+ add organisation</option>
+          {remaining.map((org) => (
+            <option key={org.id} value={org.id}>
+              {org.name}
+            </option>
+          ))}
+        </select>
+      )}
+    </div>
+  );
+}
+
 function UsersTab({
   orgs,
   currentUserId,
@@ -178,6 +252,7 @@ function UsersTab({
 }): JSX.Element {
   const [users, setUsers] = useState<AdminUserRow[]>([]);
   const [nonce, setNonce] = useState(0);
+  const [passwordFor, setPasswordFor] = useState<string | null>(null);
 
   useEffect(() => {
     api.fetchAdminUsers().then((res) => setUsers(res.users)).catch(() => setUsers([]));
@@ -187,11 +262,13 @@ function UsersTab({
 
   return (
     <>
+      <NewUserForm orgs={orgs} run={run} reload={reload} />
+
       <table className="admin-table">
         <thead>
           <tr>
             <th>Username</th>
-            <th>Organisation</th>
+            <th>Organisations</th>
             <th>Access</th>
             <th />
           </tr>
@@ -204,17 +281,12 @@ function UsersTab({
                 {user.id === currentUserId && <span style={{ opacity: 0.6 }}> (you)</span>}
               </td>
               <td>
-                <select
-                  value={user.orgId ?? ''}
-                  onChange={(e) => void run(() => api.updateUser(user.id, { orgId: e.target.value || null })).then(reload)}
-                >
-                  <option value="">— none —</option>
-                  {orgs.map((org) => (
-                    <option key={org.id} value={org.id}>
-                      {org.name}
-                    </option>
-                  ))}
-                </select>
+                <OrgChipPicker
+                  orgs={orgs}
+                  selectedIds={user.orgs.map((o) => o.id)}
+                  onAdd={(orgId) => void run(() => api.addUserOrg(user.id, orgId)).then(reload)}
+                  onRemove={(orgId) => void run(() => api.removeUserOrg(user.id, orgId)).then(reload)}
+                />
               </td>
               <td>
                 <select
@@ -229,18 +301,32 @@ function UsersTab({
                 </select>
               </td>
               <td>
-                <div className="actions">
-                  <button
-                    className="button-danger"
-                    onClick={() => {
-                      if (window.confirm(`Delete the account "${user.username}"?`)) {
-                        void run(() => api.deleteUser(user.id), 'Account deleted.').then(reload);
-                      }
-                    }}
-                  >
-                    Delete
-                  </button>
-                </div>
+                {passwordFor === user.id ? (
+                  <PasswordEditor
+                    onCancel={() => setPasswordFor(null)}
+                    onSet={(password) =>
+                      void run(() => api.setUserPassword(user.id, password), 'Password changed.').then(() =>
+                        setPasswordFor(null),
+                      )
+                    }
+                  />
+                ) : (
+                  <div className="actions">
+                    <button className="pill" onClick={() => setPasswordFor(user.id)}>
+                      Change password
+                    </button>
+                    <button
+                      className="button-danger"
+                      onClick={() => {
+                        if (window.confirm(`Delete the account "${user.username}"?`)) {
+                          void run(() => api.deleteUser(user.id), 'Account deleted.').then(reload);
+                        }
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                )}
               </td>
             </tr>
           ))}
@@ -248,11 +334,96 @@ function UsersTab({
       </table>
 
       <p className="modal-hint">
-        <strong>user</strong> — sees only their own organisation's whitelisted tags. <strong>admin</strong> — that, plus
-        this panel and the ability to look at any organisation. Anyone can sign up, but a new account sees nothing until
-        it is placed in an organisation here.
+        <strong>client</strong> and <strong>dev</strong> both see only their organisations' whitelisted tags — the same
+        access today, kept as separate labels for a difference that doesn't exist yet. <strong>admin</strong> — that, plus
+        this panel and every organisation, regardless of what's listed for them above. A user can belong to any number of
+        organisations — none, one, or several — and switches between them from the dropdown in the header. Anyone can
+        sign up, but a new account sees nothing until it's placed in an organisation — here, by approving its request on
+        the Requests tab, or added directly above.
       </p>
     </>
+  );
+}
+
+/** A small inline form for an admin to create an account directly, already placed in organisations. */
+function NewUserForm({ orgs, run, reload }: { orgs: OrganisationRow[]; run: Run; reload: () => void }): JSX.Element {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [role, setRole] = useState<UserRole>('client');
+  const [orgIds, setOrgIds] = useState<string[]>([]);
+
+  const submit = (e: React.FormEvent): void => {
+    e.preventDefault();
+    if (!username.trim() || password.length < 8) return;
+    void run(() => api.createAdminUser(username.trim(), password, role, orgIds), `Added ${username.trim()}.`).then(
+      () => {
+        setUsername('');
+        setPassword('');
+        setRole('client');
+        setOrgIds([]);
+        reload();
+      },
+    );
+  };
+
+  return (
+    <form className="admin-form" onSubmit={submit}>
+      <label>
+        Username
+        <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="jsmith" />
+      </label>
+      <label>
+        Password
+        <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} minLength={8} />
+      </label>
+      <label>
+        Access
+        <select value={role} onChange={(e) => setRole(e.target.value as UserRole)}>
+          {ROLES.map((r) => (
+            <option key={r} value={r}>
+              {r}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        Organisations
+        <OrgChipPicker
+          orgs={orgs}
+          selectedIds={orgIds}
+          onAdd={(orgId) => setOrgIds((prev) => [...prev, orgId])}
+          onRemove={(orgId) => setOrgIds((prev) => prev.filter((id) => id !== orgId))}
+        />
+      </label>
+      <button className="button-primary" type="submit">
+        Add user
+      </button>
+    </form>
+  );
+}
+
+/** Inline password field that replaces the row's action buttons until confirmed or cancelled. */
+function PasswordEditor({ onCancel, onSet }: { onCancel: () => void; onSet: (password: string) => void }): JSX.Element {
+  const [value, setValue] = useState('');
+
+  return (
+    <div className="actions" style={{ alignItems: 'center' }}>
+      <input
+        type="password"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        placeholder="new password"
+        minLength={8}
+        autoFocus
+        style={{ width: 140 }}
+      />
+      <button className="pill" disabled={value.length < 8} onClick={() => onSet(value)}>
+        Set
+      </button>
+      <button className="pill" onClick={onCancel}>
+        Cancel
+      </button>
+    </div>
   );
 }
 
@@ -593,5 +764,63 @@ function TagsTab({ orgs, run }: { orgs: OrganisationRow[]; run: Run }): JSX.Elem
         history with it.
       </p>
     </>
+  );
+}
+
+// --- Access requests ---------------------------------------------------------
+
+function RequestsTab({ run }: { run: Run }): JSX.Element {
+  const [requests, setRequests] = useState<OrgAccessRequestRow[]>([]);
+  const [nonce, setNonce] = useState(0);
+  const [busyId, setBusyId] = useState<number | null>(null);
+
+  useEffect(() => {
+    api.fetchAdminOrgRequests().then((res) => setRequests(res.requests)).catch(() => setRequests([]));
+  }, [nonce]);
+
+  const reload = (): void => setNonce((n) => n + 1);
+
+  const decide = (id: number, decision: 'approve' | 'reject'): void => {
+    setBusyId(id);
+    const action = decision === 'approve' ? api.approveOrgRequest : api.rejectOrgRequest;
+    void run(() => action(id), decision === 'approve' ? 'Approved.' : 'Rejected.')
+      .then(reload)
+      .finally(() => setBusyId(null));
+  };
+
+  if (requests.length === 0) {
+    return <p className="modal-hint">No pending requests.</p>;
+  }
+
+  return (
+    <table className="admin-table">
+      <thead>
+        <tr>
+          <th>User</th>
+          <th>Wants to join</th>
+          <th>Asked</th>
+          <th />
+        </tr>
+      </thead>
+      <tbody>
+        {requests.map((r) => (
+          <tr key={r.id}>
+            <td className="mono">{r.username}</td>
+            <td>{r.orgName ?? '—'}</td>
+            <td className="mono">{seenLabel(r.createdAt)}</td>
+            <td>
+              <div className="actions">
+                <button className="pill" disabled={busyId === r.id} onClick={() => decide(r.id, 'approve')}>
+                  Approve
+                </button>
+                <button className="button-danger" disabled={busyId === r.id} onClick={() => decide(r.id, 'reject')}>
+                  Reject
+                </button>
+              </div>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }

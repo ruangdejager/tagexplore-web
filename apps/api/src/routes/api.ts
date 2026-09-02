@@ -58,22 +58,38 @@ export function createApi(deps: ApiDeps): Hono<Env> {
   const api = new Hono<Env>();
 
   /**
-   * Everything below is organisation-scoped. A normal user is pinned to their
-   * own organisation; an admin may pass `?orgId=` to look at any of them, which
-   * is what makes "check what this client actually sees" possible without a
-   * second login.
+   * Everything below is organisation-scoped. A normal user may belong to
+   * several organisations and picks one via `?orgId=`, but only from among
+   * their own memberships; an admin may pass any organisation's id at all,
+   * which is what makes "check what this client actually sees" possible
+   * without a second login.
    */
   api.use('*', async (c, next) => {
     const user = currentUser(c, deps.store);
     if (!user) return c.json({ error: 'Log in first.' }, 401);
 
     const requested = c.req.query('orgId');
-    const orgId = user.role === 'admin' && requested ? requested : user.orgId;
+    const isAdmin = user.role === 'admin';
+    let orgId: string | null;
+
+    if (isAdmin) {
+      if (requested && !deps.store.getOrg(requested)) return c.json({ error: 'No organisation with that id.' }, 404);
+      orgId = requested ?? null;
+    } else {
+      const memberships = deps.store.listOrgsForUser(user.id);
+      if (requested) {
+        if (!memberships.some((o) => o.id === requested)) {
+          return c.json({ error: 'You are not a member of that organisation.' }, 403);
+        }
+        orgId = requested;
+      } else {
+        // No explicit pick — default to the first organisation this account belongs to.
+        orgId = memberships[0]?.id ?? null;
+      }
+    }
+
     if (!orgId) {
       return c.json({ error: 'Your account is not in an organisation yet — an admin needs to add you to one.' }, 403);
-    }
-    if (user.role === 'admin' && requested && !deps.store.getOrg(requested)) {
-      return c.json({ error: 'No organisation with that id.' }, 404);
     }
 
     c.set('user', user);
@@ -94,6 +110,24 @@ export function createApi(deps: ApiDeps): Hono<Env> {
       to: window.to,
       snapshots: deps.store.tagSnapshots({ orgId: c.get('orgId'), ...window }),
     });
+  });
+
+  /** Raw GPS fixes in the window, for the density heatmap — not collapsed to one-per-tag like `/snapshots`. */
+  api.get('/positions', (c) => {
+    const window = readWindow(c.req.query(), Date.now());
+    if ('error' in window) return c.json({ error: window.error }, 400);
+
+    return c.json({
+      from: window.from,
+      to: window.to,
+      points: deps.store.gpsPoints({ orgId: c.get('orgId'), ...window }),
+    });
+  });
+
+  /** Per-round unique-tag counts, newest first — the count panel's "latest" figure and its history list. */
+  api.get('/discovery-counts', (c) => {
+    const limit = Math.min(1000, Number(c.req.query('limit') ?? 200) || 200);
+    return c.json({ counts: deps.store.listDiscoveryCounts(c.get('orgId'), limit) });
   });
 
   /**

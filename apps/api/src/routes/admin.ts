@@ -1,17 +1,19 @@
 import { Hono } from 'hono';
 import { nanoid } from 'nanoid';
 import { parseTagIdList, type UserRole } from '@tagexplore/core';
+import { hashPassword } from '../auth/password.js';
 import { currentUser } from '../auth/session.js';
 import type { Config } from '../config.js';
 import type { Store } from '../db/index.js';
 import { ingestDevice } from '../ingest/ingest.js';
+import { MIN_PASSWORD_LENGTH, USERNAME_PATTERN } from './auth.js';
 
 export interface AdminDeps {
   store: Store;
   config: Config;
 }
 
-const VALID_ROLES: readonly UserRole[] = ['user', 'admin'];
+const VALID_ROLES: readonly UserRole[] = ['client', 'dev', 'admin'];
 /** An IMEI is 15 digits; anything else is a typo, not a device. */
 const IMEI_PATTERN = /^\d{14,16}$/;
 const UNCLAIMED_WINDOW_MS = 30 * 86_400_000;
@@ -73,6 +75,37 @@ export function createAdminApi(deps: AdminDeps): Hono<Env> {
 
   api.get('/users', (c) => c.json({ users: deps.store.listUsers() }));
 
+  /** An admin creating an account directly — the same validation signup uses, minus the self-service restrictions. */
+  api.post('/users', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const username = typeof body['username'] === 'string' ? body['username'].trim() : '';
+    const password = typeof body['password'] === 'string' ? body['password'] : '';
+    const role = typeof body['role'] === 'string' ? body['role'] : 'client';
+    const orgIds = Array.isArray(body['orgIds']) ? body['orgIds'].filter((v): v is string => typeof v === 'string') : [];
+
+    if (!USERNAME_PATTERN.test(username)) {
+      return c.json({ error: 'Username must be 3-32 characters: letters, numbers, "_", "." or "-".' }, 400);
+    }
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      return c.json({ error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters.` }, 400);
+    }
+    if (!VALID_ROLES.includes(role as UserRole)) {
+      return c.json({ error: `role must be one of: ${VALID_ROLES.join(', ')}.` }, 400);
+    }
+    if (deps.store.getUserByUsername(username)) {
+      return c.json({ error: 'That username is already taken.' }, 409);
+    }
+    const badOrg = orgIds.find((id) => !deps.store.getOrg(id));
+    if (badOrg) return c.json({ error: `No organisation with id ${badOrg}.` }, 404);
+
+    const id = nanoid(14);
+    deps.store.createUser(id, username, await hashPassword(password));
+    if (role !== 'client') deps.store.setUserRole(id, role as UserRole);
+    if (orgIds.length > 0) deps.store.setUserOrgs(id, orgIds);
+
+    return c.json({ user: deps.store.listUsers().find((u) => u.id === id) }, 201);
+  });
+
   api.patch('/users/:id', async (c) => {
     const targetId = c.req.param('id');
     const target = deps.store.getUserById(targetId);
@@ -94,17 +127,42 @@ export function createAdminApi(deps: AdminDeps): Hono<Env> {
       deps.store.setUserRole(targetId, role as UserRole);
     }
 
-    if ('orgId' in body) {
-      const orgId = body['orgId'];
-      if (orgId !== null && typeof orgId !== 'string') {
-        return c.json({ error: 'orgId must be an organisation id, or null to unassign.' }, 400);
-      }
-      if (typeof orgId === 'string' && !deps.store.getOrg(orgId)) {
-        return c.json({ error: 'No organisation with that id.' }, 404);
-      }
-      deps.store.setUserOrg(targetId, orgId);
+    return c.json({ ok: true });
+  });
+
+  /** Adds one organisation to a user's memberships — a single click in the admin UI, not a "save the whole list" step. */
+  api.post('/users/:id/orgs', async (c) => {
+    const targetId = c.req.param('id');
+    if (!deps.store.getUserById(targetId)) return c.json({ error: 'No user with that id.' }, 404);
+
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const orgId = typeof body['orgId'] === 'string' ? body['orgId'] : '';
+    if (!orgId) return c.json({ error: 'orgId is required.' }, 400);
+    if (!deps.store.getOrg(orgId)) return c.json({ error: 'No organisation with that id.' }, 404);
+
+    deps.store.addUserOrg(targetId, orgId);
+    return c.json({ ok: true }, 201);
+  });
+
+  api.delete('/users/:id/orgs/:orgId', (c) => {
+    const targetId = c.req.param('id');
+    if (!deps.store.getUserById(targetId)) return c.json({ error: 'No user with that id.' }, 404);
+    deps.store.removeUserOrg(targetId, c.req.param('orgId'));
+    return c.json({ ok: true });
+  });
+
+  /** An admin setting a new password directly — no old password needed, this is an override. */
+  api.patch('/users/:id/password', async (c) => {
+    const targetId = c.req.param('id');
+    if (!deps.store.getUserById(targetId)) return c.json({ error: 'No user with that id.' }, 404);
+
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const password = typeof body['password'] === 'string' ? body['password'] : '';
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      return c.json({ error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters.` }, 400);
     }
 
+    deps.store.setUserPassword(targetId, await hashPassword(password));
     return c.json({ ok: true });
   });
 
@@ -254,6 +312,30 @@ export function createAdminApi(deps: AdminDeps): Hono<Env> {
     const orgId = c.req.query('orgId');
     const since = Date.now() - UNCLAIMED_WINDOW_MS;
     return c.json({ tags: deps.store.listUnclaimedTags(since, orgId) });
+  });
+
+  // --- Organisation access requests -----------------------------------------
+
+  api.get('/org-requests', (c) => c.json({ requests: deps.store.listPendingOrgRequests() }));
+
+  api.post('/org-requests/:id/approve', (c) => {
+    const id = Number(c.req.param('id'));
+    const request = deps.store.getOrgRequest(id);
+    if (!request) return c.json({ error: 'No request with that id.' }, 404);
+    if (request.status !== 'pending') return c.json({ error: 'That request was already resolved.' }, 409);
+
+    deps.store.approveOrgRequest(id, c.get('userId'));
+    return c.json({ ok: true });
+  });
+
+  api.post('/org-requests/:id/reject', (c) => {
+    const id = Number(c.req.param('id'));
+    const request = deps.store.getOrgRequest(id);
+    if (!request) return c.json({ error: 'No request with that id.' }, 404);
+    if (request.status !== 'pending') return c.json({ error: 'That request was already resolved.' }, 409);
+
+    deps.store.rejectOrgRequest(id, c.get('userId'));
+    return c.json({ ok: true });
   });
 
   return api;

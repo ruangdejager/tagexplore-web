@@ -6,15 +6,20 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
 import { compress } from 'hono/compress';
 import { logger } from 'hono/logger';
+import { ensureFoundingAdmin } from './auth/foundingAdmin.js';
 import { loadConfig } from './config.js';
 import { Store } from './db/index.js';
 import { createScheduler } from './ingest/scheduler.js';
+import { createAccountApi } from './routes/account.js';
 import { createAdminApi } from './routes/admin.js';
 import { createApi } from './routes/api.js';
 import { createAuthApi } from './routes/auth.js';
 
 const config = loadConfig();
 const store = new Store(config.dbPath, config.foundingAdminUsername);
+// Creates the account on a brand-new database (e.g. a fresh Railway volume);
+// a no-op once it already exists, from a signup or an earlier boot.
+await ensureFoundingAdmin(store, config.foundingAdminUsername, config.foundingAdminPassword);
 
 const app = new Hono();
 
@@ -30,6 +35,7 @@ app.use('*', compress());
 const cookieSecure = config.publicBaseUrl.startsWith('https://');
 
 app.route('/api/auth', createAuthApi({ store, cookieSecure }));
+app.route('/api/account', createAccountApi({ store }));
 app.route('/api/admin', createAdminApi({ store, config }));
 app.route('/api', createApi({ store, config }));
 
