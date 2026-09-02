@@ -1,0 +1,10 @@
+*22:00:14(+02:00) Wed 29-Jul-2026 3900mV
+---------------------------------
+Tag Discovery (advanced) primary v2.0.2:
+DeviceId,Hops,Wave,RSSI,BatMv,Move,Lat,Lon,FwPatch
+
+A20,1,1,-66,3940,1,-33964066,18837871,2
+
+LOG TIMEOUT
+Partial devices discovered: 1
+---------------------------------

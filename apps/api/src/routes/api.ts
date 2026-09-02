@@ -1,0 +1,139 @@
+import { Hono } from 'hono';
+import { parseTagIdList } from '@tagexplore/core';
+import { currentUser } from '../auth/session.js';
+import type { Config } from '../config.js';
+import type { Store, UserRow } from '../db/index.js';
+
+export interface ApiDeps {
+  store: Store;
+  config: Config;
+}
+
+const DEFAULT_WINDOW_HOURS = 72;
+const MAX_WINDOW_DAYS = 365;
+/**
+ * Roughly one point per two pixels on a wide chart. Past this, more points buy
+ * nothing visible and cost real bytes — so readings are averaged into buckets
+ * whose width is derived from the requested range.
+ */
+const TARGET_CHART_POINTS = 400;
+
+type Env = { Variables: { user: UserRow; orgId: string } };
+
+interface Window {
+  from: number;
+  to: number;
+}
+
+/**
+ * Resolves `from`/`to`/`hours` query parameters into an absolute window.
+ * `hours` is the convenience form the map uses; explicit epoch milliseconds are
+ * what the battery-trend range picker sends.
+ */
+function readWindow(query: Record<string, string | undefined>, nowMs: number): Window | { error: string } {
+  const to = query['to'] ? Number(query['to']) : nowMs;
+  if (!Number.isFinite(to)) return { error: '`to` must be epoch milliseconds.' };
+
+  let from: number;
+  if (query['from']) {
+    from = Number(query['from']);
+    if (!Number.isFinite(from)) return { error: '`from` must be epoch milliseconds.' };
+  } else {
+    const hours = Number(query['hours'] ?? DEFAULT_WINDOW_HOURS);
+    if (!Number.isFinite(hours) || hours <= 0) return { error: '`hours` must be a positive number.' };
+    from = to - hours * 3_600_000;
+  }
+
+  if (from >= to) return { error: '`from` must be before `to`.' };
+  if (to - from > MAX_WINDOW_DAYS * 86_400_000) return { error: `Range is capped at ${MAX_WINDOW_DAYS} days.` };
+  return { from, to };
+}
+
+export function bucketMinutesFor(from: number, to: number, floorMinutes: number): number {
+  const rangeMinutes = (to - from) / 60_000;
+  return Math.max(floorMinutes, Math.ceil(rangeMinutes / TARGET_CHART_POINTS));
+}
+
+export function createApi(deps: ApiDeps): Hono<Env> {
+  const api = new Hono<Env>();
+
+  /**
+   * Everything below is organisation-scoped. A normal user is pinned to their
+   * own organisation; an admin may pass `?orgId=` to look at any of them, which
+   * is what makes "check what this client actually sees" possible without a
+   * second login.
+   */
+  api.use('*', async (c, next) => {
+    const user = currentUser(c, deps.store);
+    if (!user) return c.json({ error: 'Log in first.' }, 401);
+
+    const requested = c.req.query('orgId');
+    const orgId = user.role === 'admin' && requested ? requested : user.orgId;
+    if (!orgId) {
+      return c.json({ error: 'Your account is not in an organisation yet — an admin needs to add you to one.' }, 403);
+    }
+    if (user.role === 'admin' && requested && !deps.store.getOrg(requested)) {
+      return c.json({ error: 'No organisation with that id.' }, 404);
+    }
+
+    c.set('user', user);
+    c.set('orgId', orgId);
+    await next();
+  });
+
+  /** The organisation's whitelisted tags — the toggle list for the trend view. */
+  api.get('/tags', (c) => c.json({ tags: deps.store.listOrgTags(c.get('orgId')) }));
+
+  /** Latest state of every whitelisted tag heard in the window: the map and the sidebar. */
+  api.get('/snapshots', (c) => {
+    const window = readWindow(c.req.query(), Date.now());
+    if ('error' in window) return c.json({ error: window.error }, 400);
+
+    return c.json({
+      from: window.from,
+      to: window.to,
+      snapshots: deps.store.tagSnapshots({ orgId: c.get('orgId'), ...window }),
+    });
+  });
+
+  /**
+   * Battery over time. `tags` selects which series to return — the client sends
+   * only the tags whose toggle is on, so switching one off costs nothing to draw
+   * and nothing to transfer.
+   */
+  api.get('/battery', (c) => {
+    const orgId = c.get('orgId');
+    const window = readWindow(c.req.query(), Date.now());
+    if ('error' in window) return c.json({ error: window.error }, 400);
+
+    const requested = c.req.query('tags');
+    const { ids, invalid } = parseTagIdList(requested ?? '');
+    if (requested && ids.length === 0) {
+      return c.json({ error: invalid.length ? `Not tag IDs: ${invalid.join(', ')}` : 'No tag IDs given.' }, 400);
+    }
+    // No selection means the whole whitelist, which is the useful default the
+    // first time the view is opened.
+    const tagIds = ids.length ? ids : deps.store.listOrgTags(orgId).map((t) => t.tagId);
+
+    const bucketMinutes = bucketMinutesFor(window.from, window.to, deps.config.bracketMinutes);
+    return c.json({
+      from: window.from,
+      to: window.to,
+      bucketMinutes,
+      series: deps.store.batterySeries({ orgId, ...window }, tagIds, bucketMinutes),
+    });
+  });
+
+  /** The organisation's readers, so the tag card can name the device that heard a tag. */
+  api.get('/devices', (c) => {
+    const devices = deps.store.listDevices(c.get('orgId'));
+    // A non-admin has no business seeing ingest error strings; the label, IMEI
+    // and whether it is active are enough to make sense of the map.
+    if (c.get('user').role === 'admin') return c.json({ devices });
+    return c.json({
+      devices: devices.map((d) => ({ ...d, lastIngestStatus: d.lastIngestStatus?.startsWith('error') ? 'error' : d.lastIngestStatus })),
+    });
+  });
+
+  return api;
+}

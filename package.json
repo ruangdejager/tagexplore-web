@@ -1,0 +1,33 @@
+{
+  "name": "tagexplore-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Map-first web app for Farmranger tag discovery: satellite positions, battery trends, and org/device/tag administration.",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n core,api,web -c cyan,magenta,green \"npm:dev:core\" \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:core": "npm run dev --workspace @tagexplore/core",
+    "dev:api": "npm run dev --workspace @tagexplore/api",
+    "dev:web": "npm run dev --workspace @tagexplore/web",
+    "build": "npm run build --workspace @tagexplore/core && npm run build --workspace @tagexplore/api && npm run build --workspace @tagexplore/web",
+    "start": "node --env-file-if-exists=.env --no-warnings=ExperimentalWarning apps/api/dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "concurrently": "^9.1.0",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2",
+    "vite": "^6.4.3",
+    "vitest": "^3.2.7"
+  }
+}

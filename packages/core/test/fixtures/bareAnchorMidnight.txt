@@ -1,0 +1,45 @@
+*23:00:04(+02:00) Thu 27-Aug-2026 4079mV log post part=1/1 OK (bytes=9243)
+*23:00:05(+02:00) Thu 27-Aug-2026 4079mV gnss off OK (max-m10s)
+*23:00:30(+02:00) 
+---------------------------------
+Tag Discovery (advanced) primary v2.1.5:
+DeviceId,Hops,Wave,RSSI,BatMv,Move,Lat,Lon,FwPatch
+
+221D,1,1,-51,3912,1,0,0,3
+2D94,1,1,-54,3927,1,-33963330,18838226,3
+
+Total devices discovered: 2
+---------------------------------
+*23:00:30(+02:00) frtag: session end (0s, rx=377B, setreq=1, log=1, fwchk=1)
+*23:10:27(+02:00) frtag gpio1=LOW (samples=45, high=0, edges=0)
+*00:00:01(+02:00) minimal syslog mode
+*00:00:26(+02:00) 
+---------------------------------
+Tag Discovery (advanced) primary v2.1.5:
+DeviceId,Hops,Wave,RSSI,BatMv,Move,Lat,Lon,FwPatch
+
+221D,1,1,-53,3910,1,0,0,3
+2D94,1,1,-55,3925,1,-33963330,18838226,3
+
+Total devices discovered: 2
+---------------------------------
+*00:33:55(+02:00) frtag fw serve: FWREQ -> FW,WAIT (opening staged v20105)
+*00:34:03(+02:00) 
+---------------------------------
+Tag Discovery (advanced) primary v2.1.5:
+DeviceId,Hops,Wave,RSSI,BatMv,Move,Lat,Lon,FwPatch
+
+F9000004,1,0,0,3900,0,0,0,0
+
+Total devices discovered: 1
+---------------------------------
+*01:00:25(+02:00) 
+---------------------------------
+Tag Discovery (advanced) primary v2.1.5:
+DeviceId,Hops,Wave,RSSI,BatMv,Move,Lat,Lon,FwPatch
+
+221D,1,1,-52,3908,1,0,0,3
+
+Total devices discovered: 1
+---------------------------------
+*01:00:31(+02:00) Fri 28-Aug-2026 4076mV gsm on

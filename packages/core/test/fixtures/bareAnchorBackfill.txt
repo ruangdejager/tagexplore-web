@@ -1,0 +1,29 @@
+*22:00:27(+02:00) 
+---------------------------------
+Tag Discovery (advanced) primary v2.1.5:
+DeviceId,Hops,Wave,RSSI,BatMv,Move,Lat,Lon,FwPatch
+
+221D,1,1,-51,3912,1,0,0,3
+
+Total devices discovered: 1
+---------------------------------
+*23:00:30(+02:00) 
+---------------------------------
+Tag Discovery (advanced) primary v2.1.5:
+DeviceId,Hops,Wave,RSSI,BatMv,Move,Lat,Lon,FwPatch
+
+221D,1,1,-52,3911,1,0,0,3
+2D94,1,1,-54,3927,1,0,0,3
+
+Total devices discovered: 2
+---------------------------------
+*00:00:26(+02:00) 
+---------------------------------
+Tag Discovery (advanced) primary v2.1.5:
+DeviceId,Hops,Wave,RSSI,BatMv,Move,Lat,Lon,FwPatch
+
+2D94,1,1,-55,3925,1,0,0,3
+
+Total devices discovered: 1
+---------------------------------
+*00:05:12(+02:00) Fri 28-Aug-2026 4076mV gsm on
