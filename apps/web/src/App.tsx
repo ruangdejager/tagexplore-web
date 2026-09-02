@@ -66,6 +66,9 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   // Guards the save effect below from firing with the fresh-state defaults
   // before the saved preferences have actually come back from the server.
   const [prefsLoaded, setPrefsLoaded] = useState(false);
+  // The org this user was last looking at, from the server — applied to
+  // viewOrgId once it's actually one of the org's they can still see.
+  const [savedOrgId, setSavedOrgId] = useState<string | null>(null);
 
   const isAdmin = auth.user?.role === 'admin';
   // A user can belong to several organisations; the dropdown only ever offers
@@ -100,9 +103,10 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
     api.fetchOrgTags(orgId).then((res) => setWhitelist(res.tags)).catch(() => setWhitelist([]));
   }, [canSeeData, orgId]);
 
-  // The main tag-list toggle and the marker-colour legend are this user's
-  // own preferences, not this session's — loaded once on login so they carry
-  // over from wherever they were last left, saved back on every change.
+  // The main tag-list toggle, the marker-colour legend, and the last org
+  // looked at are this user's own preferences, not this session's — loaded
+  // once on login so they carry over from wherever they were last left,
+  // saved back on every change.
   useEffect(() => {
     let cancelled = false;
     api
@@ -111,6 +115,7 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
         if (cancelled) return;
         setHiddenFromMap(new Set(res.preferences.hiddenTagIds));
         setColorMode(res.preferences.colorMode);
+        setSavedOrgId(res.preferences.lastOrgId);
       })
       .finally(() => {
         if (!cancelled) setPrefsLoaded(true);
@@ -120,10 +125,18 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
     };
   }, []);
 
+  // Applied once, and only once it's actually one of the orgs this user can
+  // currently see — a stale saved org (deleted, or access since revoked)
+  // just falls through to the ordinary "first available" default instead.
+  useEffect(() => {
+    if (!prefsLoaded || savedOrgId === null || viewOrgId !== null) return;
+    if (availableOrgs.some((org) => org.id === savedOrgId)) setViewOrgId(savedOrgId);
+  }, [prefsLoaded, savedOrgId, availableOrgs, viewOrgId]);
+
   useEffect(() => {
     if (!prefsLoaded) return;
-    void api.savePreferences({ hiddenTagIds: [...hiddenFromMap], colorMode }).catch(() => {});
-  }, [prefsLoaded, hiddenFromMap, colorMode]);
+    void api.savePreferences({ hiddenTagIds: [...hiddenFromMap], colorMode, lastOrgId: orgId }).catch(() => {});
+  }, [prefsLoaded, hiddenFromMap, colorMode, orgId]);
 
   // Every tag starts toggled on in the battery trend, once per organisation —
   // not on every whitelist refetch, so a deliberate "None" or a manual toggle

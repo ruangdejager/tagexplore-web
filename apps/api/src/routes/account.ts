@@ -3,7 +3,7 @@ import type { UserPreferences } from '@tagexplore/core';
 import { currentUser } from '../auth/session.js';
 import type { Store } from '../db/index.js';
 
-const DEFAULT_PREFERENCES: UserPreferences = { hiddenTagIds: [], colorMode: 'age' };
+const DEFAULT_PREFERENCES: UserPreferences = { hiddenTagIds: [], colorMode: 'age', lastOrgId: null };
 
 function isUserPreferences(value: unknown): value is UserPreferences {
   if (!value || typeof value !== 'object') return false;
@@ -11,7 +11,8 @@ function isUserPreferences(value: unknown): value is UserPreferences {
   return (
     Array.isArray(v['hiddenTagIds']) &&
     v['hiddenTagIds'].every((id) => typeof id === 'string') &&
-    (v['colorMode'] === 'age' || v['colorMode'] === 'latestGps')
+    (v['colorMode'] === 'age' || v['colorMode'] === 'latestGps') &&
+    (v['lastOrgId'] === null || typeof v['lastOrgId'] === 'string')
   );
 }
 

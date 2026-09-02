@@ -161,4 +161,6 @@ export interface IngestRunRow {
 export interface UserPreferences {
   hiddenTagIds: string[];
   colorMode: 'age' | 'latestGps';
+  /** The organisation this user was last looking at — null if they've never picked one. */
+  lastOrgId: string | null;
 }

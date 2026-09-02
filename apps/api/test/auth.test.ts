@@ -383,38 +383,48 @@ describe('organisation access requests', () => {
 });
 
 describe('user preferences', () => {
-  it('defaults to nothing hidden and the age legend before anything is saved', async () => {
+  it('defaults to nothing hidden, the age legend and no remembered org before anything is saved', async () => {
     const cookie = await signup('shepherd');
     const res = await get('/api/account/preferences', cookie);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ preferences: { hiddenTagIds: [], colorMode: 'age' } });
+    expect(await res.json()).toEqual({ preferences: { hiddenTagIds: [], colorMode: 'age', lastOrgId: null } });
   });
 
-  it('saves this user’s toggles and hands them back on the next fetch', async () => {
+  it('saves this user’s toggles and last-viewed org and hands them back on the next fetch', async () => {
     const cookie = await signup('shepherd');
     const saved = await put(
       '/api/account/preferences',
-      { hiddenTagIds: ['3E1E', '441F'], colorMode: 'latestGps' },
+      { hiddenTagIds: ['3E1E', '441F'], colorMode: 'latestGps', lastOrgId: 'org-a' },
       cookie,
     );
     expect(saved.status).toBe(200);
 
     const res = await get('/api/account/preferences', cookie);
-    expect(await res.json()).toEqual({ preferences: { hiddenTagIds: ['3E1E', '441F'], colorMode: 'latestGps' } });
+    expect(await res.json()).toEqual({
+      preferences: { hiddenTagIds: ['3E1E', '441F'], colorMode: 'latestGps', lastOrgId: 'org-a' },
+    });
   });
 
   it('keeps each user’s preferences separate from the others', async () => {
     const shepherdCookie = await signup('shepherd');
     const otherCookie = await signup('other');
-    await put('/api/account/preferences', { hiddenTagIds: ['3E1E'], colorMode: 'age' }, shepherdCookie);
+    await put(
+      '/api/account/preferences',
+      { hiddenTagIds: ['3E1E'], colorMode: 'age', lastOrgId: 'org-a' },
+      shepherdCookie,
+    );
 
     const res = await get('/api/account/preferences', otherCookie);
-    expect(await res.json()).toEqual({ preferences: { hiddenTagIds: [], colorMode: 'age' } });
+    expect(await res.json()).toEqual({ preferences: { hiddenTagIds: [], colorMode: 'age', lastOrgId: null } });
   });
 
   it('rejects a malformed body rather than saving it', async () => {
     const cookie = await signup('shepherd');
-    const res = await put('/api/account/preferences', { hiddenTagIds: 'not-an-array', colorMode: 'age' }, cookie);
+    const res = await put(
+      '/api/account/preferences',
+      { hiddenTagIds: 'not-an-array', colorMode: 'age', lastOrgId: null },
+      cookie,
+    );
     expect(res.status).toBe(400);
   });
 
