@@ -53,6 +53,14 @@ function patch(path: string, body: unknown, cookie?: string): Promise<Response> 
   });
 }
 
+function put(path: string, body: unknown, cookie?: string): Promise<Response> {
+  return app.request(path, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', ...(cookie ? { cookie } : {}) },
+    body: JSON.stringify(body),
+  });
+}
+
 /** Signs an account up and returns the session cookie the browser would keep. */
 async function signup(username: string, password = 'correct horse battery'): Promise<string> {
   const res = await post('/api/auth/signup', { username, password });
@@ -371,5 +379,46 @@ describe('organisation access requests', () => {
     const cookie = await signup('shepherd');
     expect((await get('/api/admin/org-requests', cookie)).status).toBe(403);
     expect((await post('/api/admin/org-requests/1/approve', {}, cookie)).status).toBe(403);
+  });
+});
+
+describe('user preferences', () => {
+  it('defaults to nothing hidden and the age legend before anything is saved', async () => {
+    const cookie = await signup('shepherd');
+    const res = await get('/api/account/preferences', cookie);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ preferences: { hiddenTagIds: [], colorMode: 'age' } });
+  });
+
+  it('saves this user’s toggles and hands them back on the next fetch', async () => {
+    const cookie = await signup('shepherd');
+    const saved = await put(
+      '/api/account/preferences',
+      { hiddenTagIds: ['3E1E', '441F'], colorMode: 'latestGps' },
+      cookie,
+    );
+    expect(saved.status).toBe(200);
+
+    const res = await get('/api/account/preferences', cookie);
+    expect(await res.json()).toEqual({ preferences: { hiddenTagIds: ['3E1E', '441F'], colorMode: 'latestGps' } });
+  });
+
+  it('keeps each user’s preferences separate from the others', async () => {
+    const shepherdCookie = await signup('shepherd');
+    const otherCookie = await signup('other');
+    await put('/api/account/preferences', { hiddenTagIds: ['3E1E'], colorMode: 'age' }, shepherdCookie);
+
+    const res = await get('/api/account/preferences', otherCookie);
+    expect(await res.json()).toEqual({ preferences: { hiddenTagIds: [], colorMode: 'age' } });
+  });
+
+  it('rejects a malformed body rather than saving it', async () => {
+    const cookie = await signup('shepherd');
+    const res = await put('/api/account/preferences', { hiddenTagIds: 'not-an-array', colorMode: 'age' }, cookie);
+    expect(res.status).toBe(400);
+  });
+
+  it('requires a session', async () => {
+    expect((await get('/api/account/preferences')).status).toBe(401);
   });
 });

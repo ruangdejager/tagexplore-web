@@ -57,6 +57,9 @@ export function BatteryTrends({ orgId, tags, selected, onToggle, onSelectOnly }:
   const [series, setSeries] = useState<BatterySeries[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // Tucked out of the way by default — the map is the main event, and this is
+  // a drawer for when battery history is actually wanted.
+  const [expanded, setExpanded] = useState(false);
 
   const selectedIds = useMemo(() => [...selected].sort(), [selected]);
   const key = selectedIds.join(',');
@@ -110,61 +113,75 @@ export function BatteryTrends({ orgId, tags, selected, onToggle, onSelectOnly }:
   }, [series]);
 
   return (
-    <footer>
-      <div className="trend-head">
-        <div className="trend-controls">
-          <label>
-            from <input type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)} />
-          </label>
-          <label>
-            to <input type="date" value={to} min={from} onChange={(e) => setTo(e.target.value)} />
-          </label>
-          <button className="pill" onClick={() => onSelectOnly(tags.map((t) => t.tagId))}>
-            All tags
-          </button>
-          <button className="pill" onClick={() => onSelectOnly([])}>
-            None
-          </button>
-          <span>
-            {loading ? 'loading…' : `${series.length} of ${tags.length} shown`}
-            {error && <span className="status-error"> · {error}</span>}
-          </span>
-        </div>
-      </div>
+    <footer data-expanded={expanded ? '1' : '0'}>
+      <button
+        className="footer-pull"
+        onClick={() => setExpanded((v) => !v)}
+        title={expanded ? 'Hide battery panel' : 'Show battery panel'}
+      >
+        <span className="panel-title" style={{ padding: 0 }}>
+          Battery over time
+        </span>
+        <span className="chevron">{expanded ? '▾' : '▴'}</span>
+      </button>
 
-      <div className="trend-body">
-        <div className="chart-column">
-          <span className="panel-title chart-title">Battery over time</span>
-          {/* Remounts (and so resets any zoom) whenever the date range changes —
-              a new range is a new view, not a continuation of the old one. */}
-          <TrendChart key={`${from}|${to}`} series={series} colorFor={colorFor} />
-        </div>
-        <div className="trend-toggles">
-          {tags.length === 0 && (
-            <div className="empty" style={{ padding: '8px 0' }}>
-              No tags on this whitelist yet.
-            </div>
-          )}
-          {tags.map((tag) => {
-            const on = selected.has(tag.tagId);
-            const mv = latestByTag.get(tag.tagId);
-            return (
-              <button
-                key={tag.tagId}
-                className="trend-toggle"
-                data-on={on ? '1' : '0'}
-                onClick={() => onToggle(tag.tagId)}
-                title={on ? 'Hide this tag' : 'Show this tag'}
-              >
-                <span className="swatch" style={{ background: colorFor(tag.tagId) }} />
-                <span>{tag.tagId}</span>
-                {tag.label && <span style={{ opacity: 0.7 }}>{tag.label}</span>}
-                {on && mv !== undefined && <span className="mv">{mv}mV</span>}
+      {expanded && (
+        <div className="trend-panel">
+          <div className="trend-head">
+            <div className="trend-controls">
+              <label>
+                from <input type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)} />
+              </label>
+              <label>
+                to <input type="date" value={to} min={from} onChange={(e) => setTo(e.target.value)} />
+              </label>
+              <button className="pill" onClick={() => onSelectOnly(tags.map((t) => t.tagId))}>
+                All tags
               </button>
-            );
-          })}
+              <button className="pill" onClick={() => onSelectOnly([])}>
+                None
+              </button>
+              <span>
+                {loading ? 'loading…' : `${series.length} of ${tags.length} shown`}
+                {error && <span className="status-error"> · {error}</span>}
+              </span>
+            </div>
+          </div>
+
+          <div className="trend-body">
+            <div className="chart-column">
+              {/* Remounts (and so resets any zoom) whenever the date range changes —
+                  a new range is a new view, not a continuation of the old one. */}
+              <TrendChart key={`${from}|${to}`} series={series} colorFor={colorFor} />
+            </div>
+            <div className="trend-toggles">
+              {tags.length === 0 && (
+                <div className="empty" style={{ padding: '8px 0' }}>
+                  No tags on this whitelist yet.
+                </div>
+              )}
+              {tags.map((tag) => {
+                const on = selected.has(tag.tagId);
+                const mv = latestByTag.get(tag.tagId);
+                return (
+                  <button
+                    key={tag.tagId}
+                    className="trend-toggle"
+                    data-on={on ? '1' : '0'}
+                    onClick={() => onToggle(tag.tagId)}
+                    title={on ? 'Hide this tag' : 'Show this tag'}
+                  >
+                    <span className="swatch" style={{ background: colorFor(tag.tagId) }} />
+                    <span>{tag.tagId}</span>
+                    {tag.label && <span style={{ opacity: 0.7 }}>{tag.label}</span>}
+                    {on && mv !== undefined && <span className="mv">{mv}mV</span>}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         </div>
-      </div>
+      )}
     </footer>
   );
 }

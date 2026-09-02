@@ -10,6 +10,7 @@ import type {
   OrganisationRow,
   TagSnapshot,
   UnclaimedTagRow,
+  UserPreferences,
   UserRole,
 } from '@tagexplore/core';
 
@@ -24,6 +25,7 @@ export type {
   OrganisationRow,
   TagSnapshot,
   UnclaimedTagRow,
+  UserPreferences,
   UserRole,
 };
 
@@ -211,3 +213,9 @@ export const fetchMyOrgRequest = (): Promise<{ request: OrgAccessRequestRow | nu
 
 export const requestOrgAccess = (orgId: string): Promise<{ request: OrgAccessRequestRow }> =>
   request('/api/account/org-request', { method: 'POST', ...json({ orgId }) });
+
+export const fetchPreferences = (): Promise<{ preferences: UserPreferences }> =>
+  request('/api/account/preferences');
+
+export const savePreferences = (preferences: UserPreferences): Promise<{ ok: true }> =>
+  request('/api/account/preferences', { method: 'PUT', ...json(preferences) });

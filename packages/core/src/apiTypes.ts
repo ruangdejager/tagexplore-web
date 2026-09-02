@@ -152,3 +152,13 @@ export interface IngestRunRow {
   readingsWritten: number;
   error: string | null;
 }
+
+/**
+ * A user's own map toggles — which tags are switched off in the main list,
+ * and which marker-colour legend is active — saved against their account so
+ * they carry over to the next login rather than resetting every session.
+ */
+export interface UserPreferences {
+  hiddenTagIds: string[];
+  colorMode: 'age' | 'latestGps';
+}

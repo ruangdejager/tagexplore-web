@@ -63,6 +63,9 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   const [trendTags, setTrendTags] = useState<Set<string>>(new Set());
   const [whitelist, setWhitelist] = useState<OrgTagRow[]>([]);
   const [now, setNow] = useState(() => Date.now());
+  // Guards the save effect below from firing with the fresh-state defaults
+  // before the saved preferences have actually come back from the server.
+  const [prefsLoaded, setPrefsLoaded] = useState(false);
 
   const isAdmin = auth.user?.role === 'admin';
   // A user can belong to several organisations; the dropdown only ever offers
@@ -96,6 +99,31 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
     if (!canSeeData) return;
     api.fetchOrgTags(orgId).then((res) => setWhitelist(res.tags)).catch(() => setWhitelist([]));
   }, [canSeeData, orgId]);
+
+  // The main tag-list toggle and the marker-colour legend are this user's
+  // own preferences, not this session's — loaded once on login so they carry
+  // over from wherever they were last left, saved back on every change.
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .fetchPreferences()
+      .then((res) => {
+        if (cancelled) return;
+        setHiddenFromMap(new Set(res.preferences.hiddenTagIds));
+        setColorMode(res.preferences.colorMode);
+      })
+      .finally(() => {
+        if (!cancelled) setPrefsLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!prefsLoaded) return;
+    void api.savePreferences({ hiddenTagIds: [...hiddenFromMap], colorMode }).catch(() => {});
+  }, [prefsLoaded, hiddenFromMap, colorMode]);
 
   // Every tag starts toggled on in the battery trend, once per organisation —
   // not on every whitelist refetch, so a deliberate "None" or a manual toggle

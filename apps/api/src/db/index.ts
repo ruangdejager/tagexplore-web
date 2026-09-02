@@ -187,6 +187,14 @@ CREATE TABLE IF NOT EXISTS app_settings (
   key    TEXT PRIMARY KEY,
   value  TEXT NOT NULL
 );
+
+-- One row per user: their own map toggles (which tags are switched off, which
+-- marker colour legend is active), so a preference set on one device is still
+-- there on the next login rather than resetting every session.
+CREATE TABLE IF NOT EXISTS user_preferences (
+  user_id  TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  prefs    TEXT NOT NULL
+);
 `;
 
 export interface UserRow {
@@ -1078,6 +1086,24 @@ export class Store {
     this.db
       .prepare('INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
       .run(key, value);
+  }
+
+  // --- User preferences ------------------------------------------------------
+
+  /** Raw JSON, or null if this user has never saved a preference. */
+  getUserPreferences(userId: string): string | null {
+    const row = this.db.prepare('SELECT prefs FROM user_preferences WHERE user_id = ?').get(userId) as
+      | { prefs: string }
+      | undefined;
+    return row?.prefs ?? null;
+  }
+
+  setUserPreferences(userId: string, prefsJson: string): void {
+    this.db
+      .prepare(
+        'INSERT INTO user_preferences (user_id, prefs) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET prefs = excluded.prefs',
+      )
+      .run(userId, prefsJson);
   }
 
   // --- Housekeeping --------------------------------------------------------

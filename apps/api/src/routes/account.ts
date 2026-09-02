@@ -1,6 +1,19 @@
 import { Hono } from 'hono';
+import type { UserPreferences } from '@tagexplore/core';
 import { currentUser } from '../auth/session.js';
 import type { Store } from '../db/index.js';
+
+const DEFAULT_PREFERENCES: UserPreferences = { hiddenTagIds: [], colorMode: 'age' };
+
+function isUserPreferences(value: unknown): value is UserPreferences {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
+  return (
+    Array.isArray(v['hiddenTagIds']) &&
+    v['hiddenTagIds'].every((id) => typeof id === 'string') &&
+    (v['colorMode'] === 'age' || v['colorMode'] === 'latestGps')
+  );
+}
 
 export interface AccountDeps {
   store: Store;
@@ -50,6 +63,20 @@ export function createAccountApi(deps: AccountDeps): Hono<Env> {
       return c.json({ error: 'You already have a pending request — wait for an admin to answer it.' }, 409);
     }
     return c.json({ request: deps.store.getOrgRequestForUser(userId) }, 201);
+  });
+
+  /** The map toggles this user last left behind — falls back to the defaults for a first-ever visit. */
+  api.get('/preferences', (c) => {
+    const raw = deps.store.getUserPreferences(c.get('userId'));
+    const parsed: unknown = raw ? JSON.parse(raw) : null;
+    return c.json({ preferences: isUserPreferences(parsed) ? parsed : DEFAULT_PREFERENCES });
+  });
+
+  api.put('/preferences', async (c) => {
+    const body: unknown = await c.req.json().catch(() => null);
+    if (!isUserPreferences(body)) return c.json({ error: 'Invalid preferences.' }, 400);
+    deps.store.setUserPreferences(c.get('userId'), JSON.stringify(body));
+    return c.json({ ok: true });
   });
 
   return api;

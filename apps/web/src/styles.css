@@ -525,9 +525,13 @@ main {
   max-height: 190px;
 }
 .chevron {
-  margin-left: auto;
   color: var(--ink-dim);
   font-size: 11px;
+}
+/* In the alerts header the chevron sits at the far right, not next to the
+   title — the header's whole width is the click target either way. */
+.alerts-card-header .chevron {
+  margin-left: auto;
 }
 
 .legend-stack {
@@ -584,12 +588,32 @@ footer {
   grid-column: 1 / -1;
   border-top: 1px solid var(--line);
   background: var(--panel);
-  padding: 8px 18px 10px;
+}
+
+/* The only thing visible while the drawer is collapsed — centered so it reads
+   as a handle on the bottom edge of the screen, not a toolbar. */
+.footer-pull {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 0;
+}
+.footer-pull:hover .panel-title {
+  color: var(--ink);
+}
+.footer-pull .chevron {
+  font-size: 10px;
+}
+
+.trend-panel {
+  padding: 0 18px 10px;
 }
 
 .trend-head {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-end;
   align-items: center;
   gap: 14px;
   flex-wrap: wrap;
@@ -644,21 +668,12 @@ footer {
   min-width: 0;
   margin-top: 8px;
 }
-/* Title and chart share this column and nothing else, so the title's own
-   width is exactly the chart's rendered width — a percentage padding on it
-   lines up with a fixed point *inside* the SVG's viewBox (the chart's own
-   y-axis line) the same way at any panel width. */
 .chart-column {
   display: flex;
   flex-direction: column;
   gap: 6px;
   flex: 1;
   min-width: 0;
-}
-/* Matches TrendChart's own PAD.left / VIEW.width (40 / 900) — keep in sync
-   with those constants in BatteryTrends.tsx if either one changes. */
-.chart-title {
-  padding-left: calc(100% * 40 / 900);
 }
 .chart-column .chart-wrap {
   width: 100%;
