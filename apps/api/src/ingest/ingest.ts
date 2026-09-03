@@ -1,7 +1,7 @@
 import { mergeSessions, parseLogText, type DiscoveryBlock, type DiscoverySession } from '@tagexplore/core';
 import type { Config } from '../config.js';
 import type { ReadingInput, RoundInput, Store } from '../db/index.js';
-import { fetchDevicePosition, fetchUnitLogText } from './farmrangerClient.js';
+import { fetchDeviceEventData, fetchDeviceSchedule, fetchUnitLogText } from './farmrangerClient.js';
 
 export interface IngestResult {
   imei: string;
@@ -138,12 +138,17 @@ export async function ingestDevice(store: Store, config: Config, imei: string, n
     store.finishIngestRun(runId, 'ok', { blocksParsed, readingsWritten });
     store.markDeviceIngest(imei, Date.now(), 'ok');
 
-    // The reader's own position isn't in the logs at all, so it's read off a
-    // separate API — best-effort: a failure here (no token configured, the
-    // events API down) shouldn't fail an otherwise-successful log ingest.
+    // The reader's own position, and every geofence it knows about, aren't in
+    // the logs at all — both are read off a separate API — best-effort: a
+    // failure here (no token configured, the events API down) shouldn't fail
+    // an otherwise-successful log ingest.
     try {
-      const position = await fetchDevicePosition(config, imei);
+      const { position, geofences } = await fetchDeviceEventData(config, imei);
       if (position) store.setDevicePosition(imei, position.lat, position.lon, position.reportedAt);
+      if (geofences.length > 0) {
+        const device = store.getDevice(imei);
+        if (device) store.upsertGeofences(device.orgId, geofences);
+      }
     } catch {
       // Ignored — see above.
     }
@@ -155,4 +160,25 @@ export async function ingestDevice(store: Store, config: Config, imei: string, n
     store.markDeviceIngest(imei, Date.now(), `error: ${message.slice(0, 200)}`);
     throw err;
   }
+}
+
+/**
+ * Everything a manual refresh means for one device: its schedule (in case an
+ * admin changed it on the platform since we last checked), its log (tag
+ * readings), and — inside `ingestDevice` — its own position and geofences.
+ * Used by both the admin's per-device "Read now" and the main app's org-wide
+ * "Refresh", so either one is a genuine live pull, not just a re-read of
+ * whatever is already in the database.
+ */
+export async function refreshDeviceFully(store: Store, config: Config, imei: string, now = new Date()): Promise<IngestResult> {
+  // Best-effort and silent, same reasoning as the position/geofences fetch
+  // inside `ingestDevice`: a settings API hiccup should not stop the log
+  // ingest that actually matters more.
+  try {
+    const schedule = await fetchDeviceSchedule(config, imei);
+    if (schedule) store.updateDevice(imei, schedule);
+  } catch {
+    // Ignored — see above.
+  }
+  return ingestDevice(store, config, imei, now);
 }

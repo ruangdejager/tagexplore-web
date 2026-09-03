@@ -115,6 +115,20 @@ export interface TagPosition {
   t: number;
 }
 
+/**
+ * A geofence boundary, read off a reader's own events feed (the discovery
+ * logs never carry these) and cached per-organisation. `regionId` is the
+ * Farmranger platform's own id for the region, not one of ours.
+ */
+export interface GeofenceRegion {
+  regionId: string;
+  name: string;
+  /** Hex colour as the platform reports it, or null if it didn't send one. */
+  color: string | null;
+  /** `[lat, lon]` per vertex, in order — a closed polygon is implied. */
+  coordinates: Array<[number, number]>;
+}
+
 /** One discovery round's unique-tag count — one row per bracket the org's devices reported at. */
 export interface DiscoveryCountPoint {
   bracketAt: number;
@@ -182,4 +196,7 @@ export interface UserPreferences {
   colorMode: 'age' | 'latestGps' | 'discovery';
   /** The organisation this user was last looking at — null if they've never picked one. */
   lastOrgId: string | null;
+  /** Whether geofence boundaries are drawn on the map — off by default, unlike
+   *  the heatmap and link-view toggles, this one is remembered. */
+  geofencesView: boolean;
 }

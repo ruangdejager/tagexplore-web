@@ -1,4 +1,4 @@
-import { toApiDate } from '@tagexplore/core';
+import { toApiDate, type GeofenceRegion } from '@tagexplore/core';
 import type { Config } from '../config.js';
 
 /**
@@ -95,8 +95,65 @@ function readLatestEvent(payload: unknown): Record<string, unknown> | null {
   return event ?? null;
 }
 
-export async function fetchDevicePosition(config: Config, imei: string): Promise<DevicePosition | null> {
-  if (!config.settingsApiBase || !config.settingsApiToken) return null;
+function extractPosition(event: Record<string, unknown>): DevicePosition | null {
+  const lat = Number(event['gpsLatitude']);
+  const lon = Number(event['gpsLongitude']);
+  const timestamp = typeof event['timestamp'] === 'string' ? Date.parse(event['timestamp']) : NaN;
+  // (0, 0) is the same "no fix yet" sentinel the discovery logs use.
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || (lat === 0 && lon === 0)) return null;
+  return { lat, lon, reportedAt: Number.isFinite(timestamp) ? timestamp : Date.now() };
+}
+
+/**
+ * The event also carries every geofence the reader currently knows about —
+ * "regions" in the platform's own terms. A region missing a usable id, name
+ * or at least a triangle of points isn't a boundary we can draw, so it's
+ * dropped rather than stored malformed.
+ */
+function extractGeofences(event: Record<string, unknown>): GeofenceRegion[] {
+  const regions = event['regions'];
+  if (!Array.isArray(regions)) return [];
+
+  const out: GeofenceRegion[] = [];
+  for (const raw of regions) {
+    if (!raw || typeof raw !== 'object') continue;
+    const region = raw as Record<string, unknown>;
+    if (region['deleted'] === true) continue;
+
+    const id = region['id'];
+    const name = region['name'];
+    if ((typeof id !== 'number' && typeof id !== 'string') || typeof name !== 'string') continue;
+
+    const coordsRaw = region['coordinates'];
+    if (!Array.isArray(coordsRaw)) continue;
+    const coordinates: Array<[number, number]> = [];
+    for (const point of coordsRaw) {
+      if (!point || typeof point !== 'object') continue;
+      const lat = Number((point as Record<string, unknown>)['latitude']);
+      const lon = Number((point as Record<string, unknown>)['longitude']);
+      if (Number.isFinite(lat) && Number.isFinite(lon)) coordinates.push([lat, lon]);
+    }
+    if (coordinates.length < 3) continue;
+
+    out.push({
+      regionId: String(id),
+      name,
+      color: typeof region['colour'] === 'string' ? region['colour'] : null,
+      coordinates,
+    });
+  }
+  return out;
+}
+
+export interface DeviceEventData {
+  position: DevicePosition | null;
+  geofences: GeofenceRegion[];
+}
+
+/** One fetch, two things read off it — the reader's own GPS fix and every
+ *  geofence it currently reports, neither of which appear in the discovery logs. */
+export async function fetchDeviceEventData(config: Config, imei: string): Promise<DeviceEventData> {
+  if (!config.settingsApiBase || !config.settingsApiToken) return { position: null, geofences: [] };
 
   const res = await fetch(buildEventsUrl(config, imei), {
     headers: { authorization: `Bearer ${config.settingsApiToken}` },
@@ -105,15 +162,9 @@ export async function fetchDevicePosition(config: Config, imei: string): Promise
     throw new Error(`Events API returned HTTP ${res.status} for ${imei}.`);
   }
   const event = readLatestEvent((await res.json()) as unknown);
-  if (!event) return null;
+  if (!event) return { position: null, geofences: [] };
 
-  const lat = Number(event['gpsLatitude']);
-  const lon = Number(event['gpsLongitude']);
-  const timestamp = typeof event['timestamp'] === 'string' ? Date.parse(event['timestamp']) : NaN;
-  // (0, 0) is the same "no fix yet" sentinel the discovery logs use.
-  if (!Number.isFinite(lat) || !Number.isFinite(lon) || (lat === 0 && lon === 0)) return null;
-
-  return { lat, lon, reportedAt: Number.isFinite(timestamp) ? timestamp : Date.now() };
+  return { position: extractPosition(event), geofences: extractGeofences(event) };
 }
 
 /** `HH:MM:SS` (or `HH:MM`) to whole minutes. Null for anything else. */

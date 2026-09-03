@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { checkedInTagIds, type DiscoveryWindow, type OrgTagRow, type OrganisationRow, type TagSnapshot } from '@tagexplore/core';
+import {
+  checkedInTagIds,
+  type DiscoveryWindow,
+  type GeofenceRegion,
+  type OrgTagRow,
+  type OrganisationRow,
+  type TagSnapshot,
+} from '@tagexplore/core';
 import * as api from './api.js';
 import { AdminPanel } from './components/AdminPanel.js';
 import { AlertsPanel } from './components/AlertsPanel.js';
@@ -70,6 +77,13 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   const [hiddenFromMap, setHiddenFromMap] = useState<Set<string>>(new Set());
   const [heatmapView, setHeatmapView] = useState(false);
   const [linkView, setLinkView] = useState(false);
+  // Unlike heatmap/link, this one is remembered across sessions — see the
+  // preferences load/save effects below.
+  const [geofencesView, setGeofencesView] = useState(false);
+  const [geofences, setGeofences] = useState<GeofenceRegion[]>([]);
+  // True while "Refresh" is out live-pulling every device — not the same as
+  // `loading` below, which just reflects the follow-up DB re-read.
+  const [refreshingAll, setRefreshingAll] = useState(false);
   const [heatmapHours, setHeatmapHours] = useState(72);
   const [colorMode, setColorMode] = useState<MarkerColorMode>('discovery');
   const [discoveryWindow, setDiscoveryWindow] = useState<DiscoveryWindow>('6');
@@ -135,6 +149,19 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
       .finally(() => setLoadedWhitelistOrgId(orgId));
   }, [canSeeData, orgId]);
 
+  // Loads once per organisation, and again whenever "Refresh" pulls fresh
+  // ones in from the platform — pulled out to a function rather than left
+  // inline in the effect so the refresh handler further down can call it too.
+  const loadGeofences = useCallback((): void => {
+    if (!canSeeData) {
+      setGeofences([]);
+      return;
+    }
+    api.fetchGeofences(orgId).then((res) => setGeofences(res.geofences)).catch(() => setGeofences([]));
+  }, [canSeeData, orgId]);
+
+  useEffect(loadGeofences, [loadGeofences]);
+
   // The main tag-list toggle, the marker-colour legend, and the last org
   // looked at are this user's own preferences, not this session's — loaded
   // once on login so they carry over from wherever they were last left,
@@ -148,6 +175,7 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
         setHiddenFromMap(new Set(res.preferences.hiddenTagIds));
         setColorMode(res.preferences.colorMode);
         setSavedOrgId(res.preferences.lastOrgId);
+        setGeofencesView(res.preferences.geofencesView);
       })
       .finally(() => {
         if (!cancelled) setPrefsLoaded(true);
@@ -184,8 +212,10 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
 
   useEffect(() => {
     if (!prefsLoaded) return;
-    void api.savePreferences({ hiddenTagIds: [...hiddenFromMap], colorMode, lastOrgId: orgId }).catch(() => {});
-  }, [prefsLoaded, hiddenFromMap, colorMode, orgId]);
+    void api
+      .savePreferences({ hiddenTagIds: [...hiddenFromMap], colorMode, lastOrgId: orgId, geofencesView })
+      .catch(() => {});
+  }, [prefsLoaded, hiddenFromMap, colorMode, orgId, geofencesView]);
 
   // Every tag starts toggled on in the battery trend, once per organisation —
   // not on every whitelist refetch, so a deliberate "None" or a manual toggle
@@ -253,6 +283,26 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
     });
   }, []);
 
+  // "Refresh" means a real, live pull — not just a re-read of whatever's
+  // already in the database. It goes out to every one of this org's readers
+  // for their schedule, their log, and (same call as the log) their own
+  // position and geofences — the purple marker updates on this same click,
+  // not on some separate cadence. The DB re-read happens regardless of
+  // whether the live pull fully succeeded, so a partial failure still shows
+  // whatever did come in rather than nothing at all.
+  const handleRefresh = useCallback((): void => {
+    if (!orgId || refreshingAll) return;
+    setRefreshingAll(true);
+    void api
+      .refreshAll(orgId)
+      .catch(() => {})
+      .then(() => {
+        refresh();
+        loadGeofences();
+      })
+      .finally(() => setRefreshingAll(false));
+  }, [orgId, refreshingAll, refresh, loadGeofences]);
+
   // Every hook above still runs on every render regardless — only the JSX
   // this returns is held back, so nothing half-loaded (the wrong org, an
   // empty unfitted map) is ever painted.
@@ -306,8 +356,24 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
         <ViewPanel view={mainView} onChange={setMainView} />
         <div className="aside-body">
           <div className="filters">
-            <button className="pill" style={{ width: '100%' }} onClick={refresh} title="Reload now">
-              Refresh
+            <button
+              className="pill"
+              style={{ width: '100%' }}
+              onClick={handleRefresh}
+              disabled={refreshingAll}
+              title="Pull each reader's schedule, log, position and geofences fresh, then reload"
+            >
+              {refreshingAll ? 'Refreshing…' : 'Refresh'}
+            </button>
+
+            <button
+              className="pill"
+              style={{ width: '100%' }}
+              data-on={geofencesView ? '1' : '0'}
+              onClick={() => setGeofencesView((v) => !v)}
+              title="Geofence boundaries read off each reader's own events feed"
+            >
+              Enable Geofences
             </button>
 
             {mainView === 'global' && (
@@ -384,6 +450,8 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
         heatPoints={heatPoints}
         linkView={linkView}
         devices={devices}
+        geofences={geofences}
+        geofencesView={geofencesView}
         colorMode={colorMode}
         discoveryIds={discoveryIds}
         orgId={orgId}

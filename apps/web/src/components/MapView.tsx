@@ -6,6 +6,7 @@ import {
   ageColor,
   checkedInTagIds,
   type DeviceRow,
+  type GeofenceRegion,
   type GpsPoint,
   type TagPosition,
   type TagSnapshot,
@@ -59,6 +60,10 @@ interface Props {
   // --- Shared ------------------------------------------------------------
   /** Every org tag's own latest position, regardless of the list's toggles — what "Recentre" frames to. */
   orgPoints: Array<[number, number]>;
+  /** Geofence boundaries, read off the readers' own events feed — available in
+   *  both views, since a property boundary is useful context in either. */
+  geofences: GeofenceRegion[];
+  geofencesView: boolean;
 }
 
 /** True when the tag's most recent reading — not just some earlier one — carried a GPS fix. */
@@ -166,6 +171,8 @@ export function MapView({
   orgId,
   movementSnapshots,
   orgPoints,
+  geofences,
+  geofencesView,
   children,
 }: Props): JSX.Element {
   const container = useRef<HTMLDivElement | null>(null);
@@ -174,6 +181,10 @@ export function MapView({
   const markers = useRef<L.LayerGroup | null>(null);
   const heat = useRef<L.HeatLayer | null>(null);
   const links = useRef<L.LayerGroup | null>(null);
+  const geofenceLayer = useRef<L.LayerGroup | null>(null);
+  // Its own SVG renderer, same reasoning as the link lines below: cheap
+  // insurance against churning the map's shared canvas renderer.
+  const geofenceRenderer = useRef<L.SVG | null>(null);
   // Link lines get their own SVG renderer rather than sharing the map's
   // default canvas one that the tag markers use — the link layer is cleared
   // and rebuilt on its own schedule (every toggle, every snapshot refresh),
@@ -242,7 +253,9 @@ export function MapView({
     markers.current = L.layerGroup().addTo(instance);
     deviceMarkers.current = L.layerGroup();
     movementMarkers.current = L.layerGroup();
+    geofenceLayer.current = L.layerGroup();
     linkRenderer.current = L.svg({ padding: 0.5 });
+    geofenceRenderer.current = L.svg({ padding: 0.5 });
     // heat.current and links.current are created lazily — see their own effects below.
 
     // The grid settles its own size after the first paint; without this the map
@@ -482,6 +495,38 @@ export function MapView({
       marker.addTo(group);
     }
   }, [devices]);
+
+  // Geofence boundaries — available in either view, toggled independently of
+  // everything else, and never touches pan or zoom: only the attach/detach
+  // below changes when the toggle flips.
+  useEffect(() => {
+    const instance = map.current;
+    const group = geofenceLayer.current;
+    if (!instance || !group) return;
+    if (geofencesView) {
+      if (!instance.hasLayer(group)) group.addTo(instance);
+    } else if (instance.hasLayer(group)) {
+      instance.removeLayer(group);
+    }
+  }, [geofencesView]);
+
+  useEffect(() => {
+    const group = geofenceLayer.current;
+    if (!group) return;
+    group.clearLayers();
+    for (const fence of geofences) {
+      if (fence.coordinates.length < 3) continue;
+      const polygon = L.polygon(fence.coordinates, {
+        color: fence.color ?? '#E9AE2F',
+        weight: 2,
+        fillOpacity: 0.06,
+        interactive: false,
+        renderer: geofenceRenderer.current ?? undefined,
+      });
+      polygon.bindTooltip(fence.name, { direction: 'center' });
+      polygon.addTo(group);
+    }
+  }, [geofences]);
 
   // Selection is a style change on the existing markers, so picking a tag from
   // the sidebar does not rebuild the layer or disturb the view.

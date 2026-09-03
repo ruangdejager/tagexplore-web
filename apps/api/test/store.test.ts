@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { GeofenceRegion } from '@tagexplore/core';
 import { Store, type ReadingInput } from '../src/db/index.js';
 
 let dir: string;
@@ -268,6 +269,41 @@ describe('devices', () => {
       lon: 18.8383,
       gpsUpdatedAt: T0,
     });
+  });
+});
+
+describe('geofences', () => {
+  const region = (partial: Partial<GeofenceRegion> = {}): GeofenceRegion => ({
+    regionId: '4330',
+    name: 'Etse',
+    color: '#E9AE2F',
+    coordinates: [
+      [-33.9633, 18.8383],
+      [-33.9635, 18.8385],
+      [-33.9631, 18.8387],
+    ],
+    ...partial,
+  });
+
+  it('stores and lists a region, scoped to its organisation', () => {
+    store.upsertGeofences(ORG, [region()]);
+    store.upsertGeofences(OTHER_ORG, [region({ regionId: '9999', name: 'Wynandsfontein' })]);
+
+    expect(store.listGeofences(ORG)).toEqual([region()]);
+    expect(store.listGeofences(OTHER_ORG)).toEqual([region({ regionId: '9999', name: 'Wynandsfontein' })]);
+  });
+
+  it('replaces rather than duplicates when the same region id re-ingests', () => {
+    store.upsertGeofences(ORG, [region()]);
+    store.upsertGeofences(ORG, [region({ name: 'Etse (renamed)', color: '#4FBF8B' })]);
+
+    const fences = store.listGeofences(ORG);
+    expect(fences).toHaveLength(1);
+    expect(fences[0]).toMatchObject({ name: 'Etse (renamed)', color: '#4FBF8B' });
+  });
+
+  it('returns nothing for an organisation with no geofences', () => {
+    expect(store.listGeofences(ORG)).toEqual([]);
   });
 });
 

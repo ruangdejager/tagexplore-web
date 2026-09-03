@@ -5,7 +5,7 @@ import { hashPassword } from '../auth/password.js';
 import { currentUser } from '../auth/session.js';
 import type { Config } from '../config.js';
 import type { Store } from '../db/index.js';
-import { ingestDevice } from '../ingest/ingest.js';
+import { refreshDeviceFully } from '../ingest/ingest.js';
 import { MIN_PASSWORD_LENGTH, USERNAME_PATTERN } from './auth.js';
 
 export interface AdminDeps {
@@ -249,12 +249,12 @@ export function createAdminApi(deps: AdminDeps): Hono<Env> {
     return c.json({ ok: true });
   });
 
-  /** Reads this device's log right now instead of waiting for its next slot. */
+  /** Reads this device's schedule, log, position and geofences right now instead of waiting for its next slot. */
   api.post('/devices/:imei/ingest', async (c) => {
     const imei = c.req.param('imei');
     if (!deps.store.getDevice(imei)) return c.json({ error: 'No device with that IMEI.' }, 404);
     try {
-      const result = await ingestDevice(deps.store, deps.config, imei);
+      const result = await refreshDeviceFully(deps.store, deps.config, imei);
       return c.json({ result: { ...result, from: result.from.toISOString(), to: result.to.toISOString() } });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : 'Ingest failed.' }, 502);

@@ -3,6 +3,7 @@ import { parseTagIdList } from '@tagexplore/core';
 import { currentUser } from '../auth/session.js';
 import type { Config } from '../config.js';
 import type { Store, UserRow } from '../db/index.js';
+import { refreshDeviceFully } from '../ingest/ingest.js';
 
 export interface ApiDeps {
   store: Store;
@@ -191,6 +192,28 @@ export function createApi(deps: ApiDeps): Hono<Env> {
     return c.json({
       devices: devices.map((d) => ({ ...d, lastIngestStatus: d.lastIngestStatus?.startsWith('error') ? 'error' : d.lastIngestStatus })),
     });
+  });
+
+  /** Geofence boundaries for the org's readers — read off the events API, not the discovery logs. */
+  api.get('/geofences', (c) => c.json({ geofences: deps.store.listGeofences(c.get('orgId')) }));
+
+  /**
+   * What "Refresh" in the main app actually means: not a re-read of whatever
+   * is already in the database, but a live pull — schedule, log, position and
+   * geofences — for every one of this organisation's active readers, run in
+   * parallel. The client re-fetches its own snapshots/devices/geofences
+   * afterward; this just makes sure there is something new to find.
+   */
+  api.post('/refresh', async (c) => {
+    const orgId = c.get('orgId');
+    const devices = deps.store.listDevices(orgId).filter((d) => d.active);
+    const outcomes = await Promise.allSettled(devices.map((d) => refreshDeviceFully(deps.store, deps.config, d.imei)));
+    const devicesResult = outcomes.map((outcome, i) => ({
+      imei: (devices[i] as (typeof devices)[number]).imei,
+      ok: outcome.status === 'fulfilled',
+      error: outcome.status === 'rejected' ? (outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason)) : null,
+    }));
+    return c.json({ devices: devicesResult });
   });
 
   return api;

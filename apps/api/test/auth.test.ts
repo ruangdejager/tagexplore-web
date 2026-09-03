@@ -387,21 +387,33 @@ describe('user preferences', () => {
     const cookie = await signup('shepherd');
     const res = await get('/api/account/preferences', cookie);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ preferences: { hiddenTagIds: [], colorMode: 'discovery', lastOrgId: null } });
+    expect(await res.json()).toEqual({
+      preferences: { hiddenTagIds: [], colorMode: 'discovery', lastOrgId: null, geofencesView: false },
+    });
   });
 
   it('saves this user’s toggles and last-viewed org and hands them back on the next fetch', async () => {
     const cookie = await signup('shepherd');
     const saved = await put(
       '/api/account/preferences',
-      { hiddenTagIds: ['3E1E', '441F'], colorMode: 'latestGps', lastOrgId: 'org-a' },
+      { hiddenTagIds: ['3E1E', '441F'], colorMode: 'latestGps', lastOrgId: 'org-a', geofencesView: true },
       cookie,
     );
     expect(saved.status).toBe(200);
 
     const res = await get('/api/account/preferences', cookie);
     expect(await res.json()).toEqual({
-      preferences: { hiddenTagIds: ['3E1E', '441F'], colorMode: 'latestGps', lastOrgId: 'org-a' },
+      preferences: { hiddenTagIds: ['3E1E', '441F'], colorMode: 'latestGps', lastOrgId: 'org-a', geofencesView: true },
+    });
+  });
+
+  it('defaults a preferences row saved before geofencesView existed to "off" rather than resetting it', async () => {
+    const cookie = await signup('shepherd');
+    await put('/api/account/preferences', { hiddenTagIds: ['3E1E'], colorMode: 'age', lastOrgId: 'org-a' }, cookie);
+
+    const res = await get('/api/account/preferences', cookie);
+    expect(await res.json()).toEqual({
+      preferences: { hiddenTagIds: ['3E1E'], colorMode: 'age', lastOrgId: 'org-a', geofencesView: false },
     });
   });
 
@@ -410,12 +422,14 @@ describe('user preferences', () => {
     const otherCookie = await signup('other');
     await put(
       '/api/account/preferences',
-      { hiddenTagIds: ['3E1E'], colorMode: 'age', lastOrgId: 'org-a' },
+      { hiddenTagIds: ['3E1E'], colorMode: 'age', lastOrgId: 'org-a', geofencesView: true },
       shepherdCookie,
     );
 
     const res = await get('/api/account/preferences', otherCookie);
-    expect(await res.json()).toEqual({ preferences: { hiddenTagIds: [], colorMode: 'discovery', lastOrgId: null } });
+    expect(await res.json()).toEqual({
+      preferences: { hiddenTagIds: [], colorMode: 'discovery', lastOrgId: null, geofencesView: false },
+    });
   });
 
   it('rejects a malformed body rather than saving it', async () => {

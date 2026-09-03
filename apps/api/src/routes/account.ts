@@ -3,16 +3,25 @@ import type { UserPreferences } from '@tagexplore/core';
 import { currentUser } from '../auth/session.js';
 import type { Store } from '../db/index.js';
 
-const DEFAULT_PREFERENCES: UserPreferences = { hiddenTagIds: [], colorMode: 'discovery', lastOrgId: null };
+const DEFAULT_PREFERENCES: UserPreferences = {
+  hiddenTagIds: [],
+  colorMode: 'discovery',
+  lastOrgId: null,
+  geofencesView: false,
+};
 
-function isUserPreferences(value: unknown): value is UserPreferences {
+// `geofencesView` is optional here on purpose: a preferences row saved before
+// this field existed has no such key, and should still validate — read back
+// as "off", not fall through to every other saved preference resetting too.
+function isUserPreferences(value: unknown): value is Omit<UserPreferences, 'geofencesView'> & { geofencesView?: boolean } {
   if (!value || typeof value !== 'object') return false;
   const v = value as Record<string, unknown>;
   return (
     Array.isArray(v['hiddenTagIds']) &&
     v['hiddenTagIds'].every((id) => typeof id === 'string') &&
     (v['colorMode'] === 'age' || v['colorMode'] === 'latestGps' || v['colorMode'] === 'discovery') &&
-    (v['lastOrgId'] === null || typeof v['lastOrgId'] === 'string')
+    (v['lastOrgId'] === null || typeof v['lastOrgId'] === 'string') &&
+    (v['geofencesView'] === undefined || typeof v['geofencesView'] === 'boolean')
   );
 }
 
@@ -70,7 +79,10 @@ export function createAccountApi(deps: AccountDeps): Hono<Env> {
   api.get('/preferences', (c) => {
     const raw = deps.store.getUserPreferences(c.get('userId'));
     const parsed: unknown = raw ? JSON.parse(raw) : null;
-    return c.json({ preferences: isUserPreferences(parsed) ? parsed : DEFAULT_PREFERENCES });
+    const preferences: UserPreferences = isUserPreferences(parsed)
+      ? { ...parsed, geofencesView: parsed.geofencesView ?? false }
+      : DEFAULT_PREFERENCES;
+    return c.json({ preferences });
   });
 
   api.put('/preferences', async (c) => {

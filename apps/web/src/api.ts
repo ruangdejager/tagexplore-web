@@ -3,6 +3,7 @@ import type {
   BatterySeries,
   DeviceRow,
   DiscoveryCountPoint,
+  GeofenceRegion,
   GpsPoint,
   IngestRunRow,
   OrgAccessRequestRow,
@@ -20,6 +21,7 @@ export type {
   BatterySeries,
   DeviceRow,
   DiscoveryCountPoint,
+  GeofenceRegion,
   GpsPoint,
   OrgAccessRequestRow,
   OrgTagRow,
@@ -113,6 +115,20 @@ export const fetchOrgTags = (orgId: string | null): Promise<{ tags: OrgTagRow[] 
 
 export const fetchDevices = (orgId: string | null): Promise<{ devices: DeviceRow[] }> =>
   request(scoped('/api/devices', orgId));
+
+export const fetchGeofences = (orgId: string | null): Promise<{ geofences: GeofenceRegion[] }> =>
+  request(scoped('/api/geofences', orgId));
+
+/**
+ * A live pull — schedule, log, position, geofences — for every one of this
+ * organisation's readers, not just a re-read of the database. The caller
+ * still needs to re-fetch snapshots/devices/geofences afterward to actually
+ * see what changed.
+ */
+export const refreshAll = (
+  orgId: string | null,
+): Promise<{ devices: Array<{ imei: string; ok: boolean; error: string | null }> }> =>
+  request(scoped('/api/refresh', orgId), { method: 'POST' });
 
 export const fetchBattery = (
   orgId: string | null,

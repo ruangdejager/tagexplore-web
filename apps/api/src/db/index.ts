@@ -6,6 +6,7 @@ import type {
   BatterySeries,
   DeviceRow,
   DiscoveryCountPoint,
+  GeofenceRegion,
   GpsPoint,
   IngestRunRow,
   OrgAccessRequestRow,
@@ -140,6 +141,21 @@ CREATE TABLE IF NOT EXISTS org_tags (
   label       TEXT,
   created_at  INTEGER NOT NULL,
   PRIMARY KEY (org_id, tag_id)
+);
+
+-- Geofence boundaries, read off a reader's own events feed (never the
+-- discovery logs) and cached per-organisation. region_id is the Farmranger
+-- platform's own id, not one of ours — kept as the natural key alongside
+-- org_id so re-ingesting the same region is a plain replace.
+CREATE TABLE IF NOT EXISTS geofences (
+  org_id       TEXT NOT NULL REFERENCES organisations(id) ON DELETE CASCADE,
+  region_id    TEXT NOT NULL,
+  name         TEXT NOT NULL,
+  color        TEXT,
+  -- [[lat, lon], ...] — a JSON-encoded polygon, since SQLite has nowhere else to put one.
+  coordinates  TEXT NOT NULL,
+  updated_at   INTEGER NOT NULL,
+  PRIMARY KEY (org_id, region_id)
 );
 
 -- One row per (discovery round, reading device, tag). The primary key is what
@@ -820,6 +836,39 @@ export class Store {
       label: r.label,
       createdAt: r.created_at,
       lastSeenAt: r.last_seen_at,
+    }));
+  }
+
+  // --- Geofences -------------------------------------------------------------
+
+  /** Replaces (or adds) each region by its own id — same idempotent-on-reingest shape as `writeReadings`. */
+  upsertGeofences(orgId: string, regions: GeofenceRegion[]): void {
+    const stmt = this.db.prepare(
+      `INSERT OR REPLACE INTO geofences (org_id, region_id, name, color, coordinates, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    );
+    const now = Date.now();
+    this.db.exec('BEGIN');
+    try {
+      for (const r of regions) {
+        stmt.run(orgId, r.regionId, r.name, r.color, JSON.stringify(r.coordinates), now);
+      }
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
+  listGeofences(orgId: string): GeofenceRegion[] {
+    const rows = this.db
+      .prepare('SELECT region_id, name, color, coordinates FROM geofences WHERE org_id = ? ORDER BY name COLLATE NOCASE ASC')
+      .all(orgId) as Array<{ region_id: string; name: string; color: string | null; coordinates: string }>;
+    return rows.map((r) => ({
+      regionId: r.region_id,
+      name: r.name,
+      color: r.color,
+      coordinates: JSON.parse(r.coordinates) as Array<[number, number]>,
     }));
   }
 
