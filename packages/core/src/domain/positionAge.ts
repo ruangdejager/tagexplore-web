@@ -1,16 +1,13 @@
 /**
- * How stale a tag's last GPS fix is, and what colour that gets on the map.
- *
- * The buckets match the Telegram bot's map pins (<2h, <24h, <3d, older) so the
- * two views tell the same story; the colours are this app's own palette rather
- * than the bot's emoji set.
+ * How stale a tag's last GPS fix is, and what colour that gets on the map:
+ * green under 4h, yellow under 12h, orange under 24h, red beyond that.
  */
 export type PositionAge = 'live' | 'recent' | 'stale' | 'old' | 'none';
 
 export const AGE_THRESHOLD_MS: Record<Exclude<PositionAge, 'old' | 'none'>, number> = {
-  live: 2 * 3_600_000,
-  recent: 24 * 3_600_000,
-  stale: 72 * 3_600_000,
+  live: 4 * 3_600_000,
+  recent: 12 * 3_600_000,
+  stale: 24 * 3_600_000,
 };
 
 export const AGE_COLOR: Record<PositionAge, string> = {
@@ -22,10 +19,10 @@ export const AGE_COLOR: Record<PositionAge, string> = {
 };
 
 export const AGE_LABEL: Record<PositionAge, string> = {
-  live: 'Under 2h',
-  recent: 'Under 24h',
-  stale: 'Under 3 days',
-  old: 'Over 3 days',
+  live: 'Under 4h',
+  recent: 'Under 12h',
+  stale: 'Under 24h',
+  old: 'Over 24h',
   none: 'No fix',
 };
 

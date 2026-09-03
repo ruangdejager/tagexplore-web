@@ -16,6 +16,10 @@ interface Props {
   selected: Set<string>;
   onToggle: (tagId: string) => void;
   onSelectOnly: (tagIds: string[]) => void;
+  /** Owned by the parent so a tag card's "Battery trend" button can expand
+   *  this panel itself, not just pick which tag it shows. */
+  expanded: boolean;
+  onToggleExpanded: () => void;
 }
 
 /**
@@ -51,15 +55,20 @@ function fromDateInput(value: string, endOfDay: boolean): number {
   return endOfDay ? base + 86_400_000 - 1 : base;
 }
 
-export function BatteryTrends({ orgId, tags, selected, onToggle, onSelectOnly }: Props): JSX.Element {
+export function BatteryTrends({
+  orgId,
+  tags,
+  selected,
+  onToggle,
+  onSelectOnly,
+  expanded,
+  onToggleExpanded,
+}: Props): JSX.Element {
   const [from, setFrom] = useState(() => toDateInput(Date.now() - 7 * 86_400_000));
   const [to, setTo] = useState(() => toDateInput(Date.now()));
   const [series, setSeries] = useState<BatterySeries[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  // Tucked out of the way by default — the map is the main event, and this is
-  // a drawer for when battery history is actually wanted.
-  const [expanded, setExpanded] = useState(false);
 
   const selectedIds = useMemo(() => [...selected].sort(), [selected]);
   const key = selectedIds.join(',');
@@ -116,7 +125,7 @@ export function BatteryTrends({ orgId, tags, selected, onToggle, onSelectOnly }:
     <footer data-expanded={expanded ? '1' : '0'}>
       <button
         className="footer-pull"
-        onClick={() => setExpanded((v) => !v)}
+        onClick={onToggleExpanded}
         title={expanded ? 'Hide battery panel' : 'Show battery panel'}
       >
         <span className="panel-title" style={{ padding: 0 }}>

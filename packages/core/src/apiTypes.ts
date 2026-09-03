@@ -99,6 +99,14 @@ export interface GpsPoint {
   lon: number;
 }
 
+/** One tag's GPS fix at a point in time, for the movement-map replay. */
+export interface TagPosition {
+  tagId: string;
+  lat: number;
+  lon: number;
+  t: number;
+}
+
 /** One discovery round's unique-tag count — one row per bracket the org's devices reported at. */
 export interface DiscoveryCountPoint {
   bracketAt: number;
@@ -160,7 +168,7 @@ export interface IngestRunRow {
  */
 export interface UserPreferences {
   hiddenTagIds: string[];
-  colorMode: 'age' | 'latestGps';
+  colorMode: 'age' | 'latestGps' | 'discovery';
   /** The organisation this user was last looking at — null if they've never picked one. */
   lastOrgId: string | null;
 }

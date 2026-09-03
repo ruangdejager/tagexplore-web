@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import type { DiscoveryCountPoint, TagSnapshot } from '@tagexplore/core';
+import { useState } from 'react';
+import { checkedInTagIds, DISCOVERY_WINDOWS, type DiscoveryCountPoint, type DiscoveryWindow, type TagSnapshot } from '@tagexplore/core';
 import * as api from '../api.js';
 
 interface Props {
@@ -12,20 +12,14 @@ interface Props {
   snapshots: TagSnapshot[];
   now: number;
   orgId: string | null;
+  /**
+   * Lifted up to `App` rather than owned here: the discovery-state legend
+   * colours markers by the same checked-in set this fraction counts, so both
+   * need to agree on which window is picked.
+   */
+  windowChoice: DiscoveryWindow;
+  onWindowChange: (window: DiscoveryWindow) => void;
 }
-
-type WindowChoice = 'latest' | '2' | '4' | '6' | '8' | '12' | '16' | '24';
-
-const WINDOWS: Array<{ value: WindowChoice; label: string }> = [
-  { value: 'latest', label: 'Latest discovery' },
-  { value: '2', label: 'Last 2h' },
-  { value: '4', label: 'Last 4h' },
-  { value: '6', label: 'Last 6h' },
-  { value: '8', label: 'Last 8h' },
-  { value: '12', label: 'Last 12h' },
-  { value: '16', label: 'Last 16h' },
-  { value: '24', label: 'Last 24h' },
-];
 
 function timestamp(ms: number): string {
   return new Date(ms).toLocaleString('en-ZA', { timeZone: 'Africa/Johannesburg', hour12: false });
@@ -38,21 +32,12 @@ function timestamp(ms: number): string {
  * hour window. Only the scrollable history (one row per past discovery round)
  * needs its own fetch, and only once asked for.
  */
-export function CountPanel({ snapshots, now, orgId }: Props): JSX.Element {
-  const [windowChoice, setWindowChoice] = useState<WindowChoice>('latest');
+export function CountPanel({ snapshots, now, orgId, windowChoice, onWindowChange }: Props): JSX.Element {
   const [showHistory, setShowHistory] = useState(false);
   const [history, setHistory] = useState<DiscoveryCountPoint[] | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
 
-  const count = useMemo(() => {
-    if (snapshots.length === 0) return 0;
-    if (windowChoice === 'latest') {
-      const latest = Math.max(...snapshots.map((s) => s.lastSeenAt));
-      return snapshots.filter((s) => s.lastSeenAt === latest).length;
-    }
-    const cutoff = now - Number(windowChoice) * 3_600_000;
-    return snapshots.filter((s) => s.lastSeenAt >= cutoff).length;
-  }, [snapshots, windowChoice, now]);
+  const count = checkedInTagIds(snapshots, windowChoice, now).size;
 
   const toggleHistory = (): void => {
     if (!showHistory && history === null) {
@@ -73,8 +58,8 @@ export function CountPanel({ snapshots, now, orgId }: Props): JSX.Element {
       </h3>
       <div className="sub">unique tags</div>
 
-      <select value={windowChoice} onChange={(e) => setWindowChoice(e.target.value as WindowChoice)}>
-        {WINDOWS.map((w) => (
+      <select value={windowChoice} onChange={(e) => onWindowChange(e.target.value as DiscoveryWindow)}>
+        {DISCOVERY_WINDOWS.map((w) => (
           <option key={w.value} value={w.value}>
             {w.label}
           </option>

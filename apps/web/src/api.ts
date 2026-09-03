@@ -8,6 +8,7 @@ import type {
   OrgAccessRequestRow,
   OrgTagRow,
   OrganisationRow,
+  TagPosition,
   TagSnapshot,
   UnclaimedTagRow,
   UserPreferences,
@@ -23,6 +24,7 @@ export type {
   OrgAccessRequestRow,
   OrgTagRow,
   OrganisationRow,
+  TagPosition,
   TagSnapshot,
   UnclaimedTagRow,
   UserPreferences,
@@ -92,6 +94,14 @@ export const fetchPositions = (
   orgId: string | null,
   hours: number,
 ): Promise<{ from: number; to: number; points: GpsPoint[] }> => request(scoped('/api/positions', orgId, { hours }));
+
+export const fetchTagPositions = (
+  orgId: string | null,
+  from: number,
+  to: number,
+  tagIds: string[],
+): Promise<{ from: number; to: number; points: TagPosition[] }> =>
+  request(scoped('/api/tag-positions', orgId, { from, to, tags: tagIds.join(',') }));
 
 export const fetchDiscoveryCounts = (
   orgId: string | null,

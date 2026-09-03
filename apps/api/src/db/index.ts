@@ -11,6 +11,7 @@ import type {
   OrgAccessRequestRow,
   OrgTagRow,
   OrganisationRow,
+  TagPosition,
   TagSnapshot,
   UnclaimedTagRow,
   UserRole,
@@ -872,6 +873,28 @@ export class Store {
       )
       .all(orgId, from, to) as Array<{ lat: number; lon: number }>;
     return rows;
+  }
+
+  /**
+   * Every GPS-carrying reading for the given tags in the window, one row per
+   * fix — the raw material for the movement map's replay. Unlike `gpsPoints`
+   * this keeps `tagId` and `t` so positions can be grouped and stepped through
+   * per tag instead of pooled into a single density cloud.
+   */
+  tagPositions({ orgId, from, to }: ReadingWindow, tagIds: string[]): TagPosition[] {
+    if (tagIds.length === 0) return [];
+    const placeholders = tagIds.map(() => '?').join(', ');
+    const rows = this.db
+      .prepare(
+        `SELECT r.tag_id, r.lat, r.lon, r.bracket_at AS t FROM readings r
+           JOIN devices d ON d.imei = r.device_imei
+          WHERE d.org_id = ? AND r.bracket_at BETWEEN ? AND ? AND r.has_gps = 1
+            AND r.tag_id IN (${placeholders})
+            AND EXISTS (SELECT 1 FROM org_tags t WHERE t.org_id = d.org_id AND t.tag_id = r.tag_id)
+          ORDER BY r.tag_id ASC, r.bracket_at ASC`,
+      )
+      .all(orgId, from, to, ...tagIds) as Array<{ tag_id: string; lat: number; lon: number; t: number }>;
+    return rows.map((r) => ({ tagId: r.tag_id, lat: r.lat, lon: r.lon, t: r.t }));
   }
 
   /**

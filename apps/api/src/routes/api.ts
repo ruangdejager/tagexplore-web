@@ -124,6 +124,30 @@ export function createApi(deps: ApiDeps): Hono<Env> {
     });
   });
 
+  /**
+   * Per-tag GPS fixes in the window, for the movement map's replay. `tags`
+   * works the same as `/battery`'s: only the toggled-on tags are sent, and
+   * an empty selection falls back to the whole whitelist.
+   */
+  api.get('/tag-positions', (c) => {
+    const orgId = c.get('orgId');
+    const window = readWindow(c.req.query(), Date.now());
+    if ('error' in window) return c.json({ error: window.error }, 400);
+
+    const requested = c.req.query('tags');
+    const { ids, invalid } = parseTagIdList(requested ?? '');
+    if (requested && ids.length === 0) {
+      return c.json({ error: invalid.length ? `Not tag IDs: ${invalid.join(', ')}` : 'No tag IDs given.' }, 400);
+    }
+    const tagIds = ids.length ? ids : deps.store.listOrgTags(orgId).map((t) => t.tagId);
+
+    return c.json({
+      from: window.from,
+      to: window.to,
+      points: deps.store.tagPositions({ orgId, ...window }, tagIds),
+    });
+  });
+
   /** Per-round unique-tag counts, newest first — the count panel's "latest" figure and its history list. */
   api.get('/discovery-counts', (c) => {
     const limit = Math.min(1000, Number(c.req.query('limit') ?? 200) || 200);

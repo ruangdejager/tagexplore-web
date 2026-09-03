@@ -383,11 +383,11 @@ describe('organisation access requests', () => {
 });
 
 describe('user preferences', () => {
-  it('defaults to nothing hidden, the age legend and no remembered org before anything is saved', async () => {
+  it('defaults to nothing hidden, the discovery legend and no remembered org before anything is saved', async () => {
     const cookie = await signup('shepherd');
     const res = await get('/api/account/preferences', cookie);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ preferences: { hiddenTagIds: [], colorMode: 'age', lastOrgId: null } });
+    expect(await res.json()).toEqual({ preferences: { hiddenTagIds: [], colorMode: 'discovery', lastOrgId: null } });
   });
 
   it('saves this user’s toggles and last-viewed org and hands them back on the next fetch', async () => {
@@ -415,7 +415,7 @@ describe('user preferences', () => {
     );
 
     const res = await get('/api/account/preferences', otherCookie);
-    expect(await res.json()).toEqual({ preferences: { hiddenTagIds: [], colorMode: 'age', lastOrgId: null } });
+    expect(await res.json()).toEqual({ preferences: { hiddenTagIds: [], colorMode: 'discovery', lastOrgId: null } });
   });
 
   it('rejects a malformed body rather than saving it', async () => {

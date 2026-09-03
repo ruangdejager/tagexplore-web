@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { OrgTagRow, OrganisationRow, TagSnapshot } from '@tagexplore/core';
+import { checkedInTagIds, type DiscoveryWindow, type OrgTagRow, type OrganisationRow, type TagSnapshot } from '@tagexplore/core';
 import * as api from './api.js';
 import { AdminPanel } from './components/AdminPanel.js';
 import { AlertsPanel } from './components/AlertsPanel.js';
@@ -8,9 +8,12 @@ import { CountPanel } from './components/CountPanel.js';
 import { LoginScreen } from './components/LoginScreen.js';
 import { MapLegend } from './components/MapLegend.js';
 import { MapView, type MarkerColorMode } from './components/MapView.js';
+import { MovementMap } from './components/MovementMap.js';
 import { OrgRequestPanel } from './components/OrgRequestPanel.js';
 import { TagCard } from './components/TagCard.js';
 import { TagList } from './components/TagList.js';
+import { ViewPanel, type MainView } from './components/ViewPanel.js';
+import { DEFAULT_MAP_VIEW } from './mapDefaults.js';
 import { useAuth } from './state/useAuth.js';
 import { useHeatPoints } from './state/useHeatPoints.js';
 import { useSnapshots } from './state/useSnapshots.js';
@@ -39,28 +42,50 @@ const HEATMAP_WINDOWS: Array<{ hours: number; label: string }> = [
  * session exists, and conditionally calling those hooks would break the Rules
  * of Hooks. Rendering an entirely different component sidesteps that.
  */
-export function App(): JSX.Element {
+export function App(): JSX.Element | null {
   const auth = useAuth();
 
+  // Nothing renders while the session cookie is still being checked — a
+  // refresh that turns out to be authed should never flash the login form
+  // first, and one that turns out anonymous loses nothing by waiting the
+  // one request it takes to find out.
+  if (auth.status === 'checking') return null;
   if (auth.status !== 'authed') {
     return <LoginScreen auth={auth} />;
   }
   return <AuthedApp auth={auth} />;
 }
 
-function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element {
+function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element | null {
   const [showAdmin, setShowAdmin] = useState(false);
 
   const [orgs, setOrgs] = useState<OrganisationRow[]>([]);
+  // Whether the organisation list itself has been fetched — only meaningful
+  // for an admin; a plain user's orgs come from `auth.user` with no fetch.
+  const [orgsLoaded, setOrgsLoaded] = useState(false);
+  // The org id the whitelist currently in state actually belongs to, mirroring
+  // `useSnapshots`'s own `loadedOrgId` — lets a genuine org change be told
+  // apart from a background refetch of the same one.
+  const [loadedWhitelistOrgId, setLoadedWhitelistOrgId] = useState<string | null>(null);
   const [viewOrgId, setViewOrgId] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [hiddenFromMap, setHiddenFromMap] = useState<Set<string>>(new Set());
   const [heatmapView, setHeatmapView] = useState(false);
   const [heatmapHours, setHeatmapHours] = useState(72);
-  const [colorMode, setColorMode] = useState<MarkerColorMode>('age');
+  const [colorMode, setColorMode] = useState<MarkerColorMode>('discovery');
+  const [discoveryWindow, setDiscoveryWindow] = useState<DiscoveryWindow>('6');
+  const [mainView, setMainView] = useState<MainView>('global');
+  // Shared between the global map and the movement map so switching between
+  // them keeps whatever was panned and zoomed to, instead of resetting.
+  const [mapView, setMapView] = useState(DEFAULT_MAP_VIEW);
   const [selectedTagId, setSelectedTagId] = useState<string | null>(null);
   const [fitNonce, setFitNonce] = useState(0);
   const [trendTags, setTrendTags] = useState<Set<string>>(new Set());
+  // Tucked out of the way by default — the map is the main event, and this is
+  // a drawer for when battery history is actually wanted. Owned here (not
+  // inside BatteryTrends) so a tag card's "Battery trend" button can expand
+  // it, not just pick which tag it shows.
+  const [trendExpanded, setTrendExpanded] = useState(false);
   const [whitelist, setWhitelist] = useState<OrgTagRow[]>([]);
   const [now, setNow] = useState(() => Date.now());
   // Guards the save effect below from firing with the fresh-state defaults
@@ -83,7 +108,7 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   // Tags are never time-filtered — every whitelisted tag always shows its
   // latest known state, so the fetch window here is just a generous ceiling,
   // not a user-facing setting. The heatmap gets its own window below.
-  const { snapshots, devices, loading, error, refresh } = useSnapshots(orgId, SNAPSHOT_WINDOW_HOURS, canSeeData);
+  const { snapshots, devices, loading, hasLoaded, error, refresh } = useSnapshots(orgId, SNAPSHOT_WINDOW_HOURS, canSeeData);
   const heatPoints = useHeatPoints(orgId, heatmapHours, heatmapView);
 
   // "3h ago" has to keep counting without a refetch, so the clock the list and
@@ -94,13 +119,24 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   }, []);
 
   useEffect(() => {
-    if (!isAdmin) return;
-    api.fetchOrgs().then((res) => setOrgs(res.orgs)).catch(() => setOrgs([]));
+    if (!isAdmin) {
+      setOrgsLoaded(true);
+      return;
+    }
+    api
+      .fetchOrgs()
+      .then((res) => setOrgs(res.orgs))
+      .catch(() => setOrgs([]))
+      .finally(() => setOrgsLoaded(true));
   }, [isAdmin, showAdmin]);
 
   useEffect(() => {
     if (!canSeeData) return;
-    api.fetchOrgTags(orgId).then((res) => setWhitelist(res.tags)).catch(() => setWhitelist([]));
+    api
+      .fetchOrgTags(orgId)
+      .then((res) => setWhitelist(res.tags))
+      .catch(() => setWhitelist([]))
+      .finally(() => setLoadedWhitelistOrgId(orgId));
   }, [canSeeData, orgId]);
 
   // The main tag-list toggle, the marker-colour legend, and the last org
@@ -132,6 +168,23 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
     if (!prefsLoaded || savedOrgId === null || viewOrgId !== null) return;
     if (availableOrgs.some((org) => org.id === savedOrgId)) setViewOrgId(savedOrgId);
   }, [prefsLoaded, savedOrgId, availableOrgs, viewOrgId]);
+
+  // True once `orgId` has settled on its final value — the effect above will
+  // never again change it, either because there was no saved org to restore,
+  // it's already been applied, or it doesn't match anything this user can
+  // see. Gating on this (not just `prefsLoaded`) is what stops the app
+  // rendering the first-available org for a moment before jumping to the
+  // actually-remembered one.
+  const orgSelectionResolved =
+    prefsLoaded &&
+    orgsLoaded &&
+    (savedOrgId === null || viewOrgId !== null || !availableOrgs.some((org) => org.id === savedOrgId));
+
+  // Nothing is shown until every piece the first paint depends on — the
+  // resolved org, its whitelist, and its snapshots — has actually arrived, so
+  // there is never a moment showing the wrong org or an empty, unfitted map.
+  const dataReady =
+    orgSelectionResolved && (!canSeeData || (loadedWhitelistOrgId === orgId && hasLoaded));
 
   useEffect(() => {
     if (!prefsLoaded) return;
@@ -169,6 +222,20 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   const toggledSnapshots = useMemo(() => snapshots.filter((s) => !hiddenFromMap.has(s.tagId)), [snapshots, hiddenFromMap]);
   const watchedTagIds = useMemo(() => new Set(toggledSnapshots.map((s) => s.tagId)), [toggledSnapshots]);
 
+  // The discovery-state legend colours markers by the same checked-in set the
+  // count panel's fraction counts, for whatever window is currently picked.
+  const discoveryIds = useMemo(
+    () => checkedInTagIds(toggledSnapshots, discoveryWindow, now),
+    [toggledSnapshots, discoveryWindow, now],
+  );
+  // What "Recentre" frames to on either map: every org tag's own position,
+  // regardless of the list's toggles or search — unlike the global map's
+  // "fit to shown", this is a fixed reference point, not a filtered one.
+  const orgPoints = useMemo(
+    () => snapshots.filter((s) => s.lat !== null && s.lon !== null).map((s) => [s.lat as number, s.lon as number] as [number, number]),
+    [snapshots],
+  );
+
   const selected = visible.find((t) => t.tagId === selectedTagId) ?? null;
   const withFix = visible.filter((t) => t.lat !== null).length;
 
@@ -189,6 +256,11 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
       return next;
     });
   }, []);
+
+  // Every hook above still runs on every render regardless — only the JSX
+  // this returns is held back, so nothing half-loaded (the wrong org, an
+  // empty unfitted map) is ever painted.
+  if (!dataReady) return null;
 
   return (
     <div id="app">
@@ -235,74 +307,104 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
       </header>
 
       <aside>
-        <div className="filters">
-          <div className="filter-row">
-            <button className="pill" data-on={heatmapView ? '1' : '0'} onClick={() => setHeatmapView((v) => !v)}>
-              Heatmap view
-            </button>
-            <button className="pill" onClick={refresh} title="Reload now">
-              Refresh
-            </button>
+        <ViewPanel view={mainView} onChange={setMainView} />
+        <div className="aside-body">
+          <div className="filters">
+            <div className="filter-row">
+              {mainView === 'global' && (
+                <button className="pill" data-on={heatmapView ? '1' : '0'} onClick={() => setHeatmapView((v) => !v)}>
+                  Heatmap view
+                </button>
+              )}
+              <button className="pill" onClick={refresh} title="Reload now">
+                Refresh
+              </button>
+            </div>
+
+            {mainView === 'global' && (
+              <select
+                value={heatmapHours}
+                disabled={!heatmapView}
+                onChange={(e) => setHeatmapHours(Number(e.target.value))}
+                title={heatmapView ? 'Heatmap window' : 'Turn on Heatmap view to use this'}
+              >
+                {HEATMAP_WINDOWS.map((w) => (
+                  <option key={w.hours} value={w.hours}>
+                    {w.label}
+                  </option>
+                ))}
+              </select>
+            )}
+
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="tag id or label"
+              autoComplete="off"
+            />
           </div>
 
-          <select
-            value={heatmapHours}
-            disabled={!heatmapView}
-            onChange={(e) => setHeatmapHours(Number(e.target.value))}
-            title={heatmapView ? 'Heatmap window' : 'Turn on Heatmap view to use this'}
-          >
-            {HEATMAP_WINDOWS.map((w) => (
-              <option key={w.hours} value={w.hours}>
-                {w.label}
-              </option>
-            ))}
-          </select>
-
-          <input
-            type="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="tag id or label"
-            autoComplete="off"
+          {!canSeeData && !isAdmin && <OrgRequestPanel />}
+          <TagList
+            snapshots={visible}
+            selectedTagId={selectedTagId}
+            onSelect={setSelectedTagId}
+            now={now}
+            hiddenFromMap={hiddenFromMap}
+            onToggleMapVisibility={toggleMapVisibility}
           />
         </div>
-
-        {!canSeeData && !isAdmin && <OrgRequestPanel />}
-        <TagList
-          snapshots={visible}
-          selectedTagId={selectedTagId}
-          onSelect={setSelectedTagId}
-          now={now}
-          hiddenFromMap={hiddenFromMap}
-          onToggleMapVisibility={toggleMapVisibility}
-        />
       </aside>
 
-      <MapView
-        snapshots={mapTags}
-        selectedTagId={selectedTagId}
-        onSelect={setSelectedTagId}
-        fitNonce={fitNonce}
-        autoFitKey={orgId}
-        heatmapView={heatmapView}
-        heatPoints={heatPoints}
-        colorMode={colorMode}
-      >
-        <div className="map-topleft">
-          <CountPanel snapshots={toggledSnapshots} now={now} orgId={orgId} />
-          <AlertsPanel watchedTagIds={watchedTagIds} snapshots={snapshots} tags={whitelist} now={now} />
-          {selected && (
-            <TagCard
-              tag={selected}
-              devices={devices}
+      {mainView === 'global' ? (
+        <MapView
+          snapshots={mapTags}
+          selectedTagId={selectedTagId}
+          onSelect={setSelectedTagId}
+          fitNonce={fitNonce}
+          autoFitKey={orgId}
+          heatmapView={heatmapView}
+          heatPoints={heatPoints}
+          colorMode={colorMode}
+          discoveryIds={discoveryIds}
+          orgPoints={orgPoints}
+          initialView={mapView}
+          onViewChange={setMapView}
+        >
+          <div className="map-topleft">
+            <CountPanel
+              snapshots={toggledSnapshots}
               now={now}
-              onClose={() => setSelectedTagId(null)}
-              onShowTrend={(tagId) => setTrendTags(new Set([tagId]))}
+              orgId={orgId}
+              windowChoice={discoveryWindow}
+              onWindowChange={setDiscoveryWindow}
             />
-          )}
-        </div>
-        <MapLegend mode={colorMode} onChange={setColorMode} />
-      </MapView>
+            <AlertsPanel watchedTagIds={watchedTagIds} snapshots={snapshots} tags={whitelist} now={now} />
+            {selected && (
+              <TagCard
+                tag={selected}
+                devices={devices}
+                now={now}
+                onClose={() => setSelectedTagId(null)}
+                onShowTrend={(tagId) => {
+                  setTrendTags(new Set([tagId]));
+                  setTrendExpanded(true);
+                }}
+              />
+            )}
+          </div>
+          <MapLegend mode={colorMode} onChange={setColorMode} />
+        </MapView>
+      ) : (
+        <MovementMap
+          orgId={orgId}
+          snapshots={toggledSnapshots}
+          orgPoints={orgPoints}
+          initialView={mapView}
+          onViewChange={setMapView}
+        />
+      )}
 
       <BatteryTrends
         orgId={orgId}
@@ -310,6 +412,8 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
         selected={trendTags}
         onToggle={toggleTrendTag}
         onSelectOnly={(ids) => setTrendTags(new Set(ids))}
+        expanded={trendExpanded}
+        onToggleExpanded={() => setTrendExpanded((v) => !v)}
       />
 
       {showAdmin && auth.user && (

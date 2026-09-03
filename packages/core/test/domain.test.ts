@@ -31,10 +31,10 @@ describe('positionAge', () => {
   const now = Date.parse('2026-08-28T12:00:00Z');
 
   it('buckets a fix by how long ago it was reported', () => {
-    expect(positionAge(now - 60 * 60_000, now)).toBe('live');
-    expect(positionAge(now - 5 * 3_600_000, now)).toBe('recent');
-    expect(positionAge(now - 40 * 3_600_000, now)).toBe('stale');
-    expect(positionAge(now - 100 * 3_600_000, now)).toBe('old');
+    expect(positionAge(now - 1 * 3_600_000, now)).toBe('live');
+    expect(positionAge(now - 8 * 3_600_000, now)).toBe('recent');
+    expect(positionAge(now - 20 * 3_600_000, now)).toBe('stale');
+    expect(positionAge(now - 30 * 3_600_000, now)).toBe('old');
     expect(positionAge(null, now)).toBe('none');
   });
 });

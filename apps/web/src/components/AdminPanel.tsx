@@ -50,10 +50,16 @@ export function AdminPanel({ currentUserId, onClose, onDataChanged }: Props): JS
 
   useEffect(loadOrgs, [loadOrgs]);
 
+  // Counts both explicit "join this org" requests and plain signups that
+  // never picked one — a fresh account has nothing to do to be counted here,
+  // so this badge is what makes signing up alone reach the admin.
   const loadPendingCount = useCallback(() => {
-    api
-      .fetchAdminOrgRequests()
-      .then((res) => setPendingRequestCount(res.requests.length))
+    Promise.all([api.fetchAdminOrgRequests(), api.fetchAdminUsers()])
+      .then(([reqRes, usersRes]) => {
+        const requestedIds = new Set(reqRes.requests.map((r) => r.userId));
+        const unassigned = usersRes.users.filter((u) => u.orgs.length === 0 && !requestedIds.has(u.id)).length;
+        setPendingRequestCount(reqRes.requests.length + unassigned);
+      })
       .catch(() => setPendingRequestCount(0));
   }, []);
 
@@ -105,7 +111,7 @@ export function AdminPanel({ currentUserId, onClose, onDataChanged }: Props): JS
         {tab === 'users' && <UsersTab orgs={orgs} currentUserId={currentUserId} run={run} />}
         {tab === 'devices' && <DevicesTab orgs={orgs} run={run} />}
         {tab === 'tags' && <TagsTab orgs={orgs} run={run} />}
-        {tab === 'requests' && <RequestsTab run={run} />}
+        {tab === 'requests' && <RequestsTab orgs={orgs} run={run} />}
       </div>
     </div>
   );
@@ -769,13 +775,15 @@ function TagsTab({ orgs, run }: { orgs: OrganisationRow[]; run: Run }): JSX.Elem
 
 // --- Access requests ---------------------------------------------------------
 
-function RequestsTab({ run }: { run: Run }): JSX.Element {
+function RequestsTab({ orgs, run }: { orgs: OrganisationRow[]; run: Run }): JSX.Element {
   const [requests, setRequests] = useState<OrgAccessRequestRow[]>([]);
+  const [users, setUsers] = useState<AdminUserRow[]>([]);
   const [nonce, setNonce] = useState(0);
   const [busyId, setBusyId] = useState<number | null>(null);
 
   useEffect(() => {
     api.fetchAdminOrgRequests().then((res) => setRequests(res.requests)).catch(() => setRequests([]));
+    api.fetchAdminUsers().then((res) => setUsers(res.users)).catch(() => setUsers([]));
   }, [nonce]);
 
   const reload = (): void => setNonce((n) => n + 1);
@@ -788,39 +796,82 @@ function RequestsTab({ run }: { run: Run }): JSX.Element {
       .finally(() => setBusyId(null));
   };
 
-  if (requests.length === 0) {
+  // A signup is itself a request for access — it never asks which org, so it
+  // shows up here too rather than needing the user to file anything further.
+  // Excludes anyone already listed above with an explicit pending request.
+  const requestedUserIds = new Set(requests.map((r) => r.userId));
+  const unassigned = users.filter((u) => u.orgs.length === 0 && !requestedUserIds.has(u.id));
+
+  if (requests.length === 0 && unassigned.length === 0) {
     return <p className="modal-hint">No pending requests.</p>;
   }
 
   return (
-    <table className="admin-table">
-      <thead>
-        <tr>
-          <th>User</th>
-          <th>Wants to join</th>
-          <th>Asked</th>
-          <th />
-        </tr>
-      </thead>
-      <tbody>
-        {requests.map((r) => (
-          <tr key={r.id}>
-            <td className="mono">{r.username}</td>
-            <td>{r.orgName ?? '—'}</td>
-            <td className="mono">{seenLabel(r.createdAt)}</td>
-            <td>
-              <div className="actions">
-                <button className="pill" disabled={busyId === r.id} onClick={() => decide(r.id, 'approve')}>
-                  Approve
-                </button>
-                <button className="button-danger" disabled={busyId === r.id} onClick={() => decide(r.id, 'reject')}>
-                  Reject
-                </button>
-              </div>
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <>
+      {requests.length > 0 && (
+        <table className="admin-table">
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Wants to join</th>
+              <th>Asked</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {requests.map((r) => (
+              <tr key={r.id}>
+                <td className="mono">{r.username}</td>
+                <td>{r.orgName ?? '—'}</td>
+                <td className="mono">{seenLabel(r.createdAt)}</td>
+                <td>
+                  <div className="actions">
+                    <button className="pill" disabled={busyId === r.id} onClick={() => decide(r.id, 'approve')}>
+                      Approve
+                    </button>
+                    <button className="button-danger" disabled={busyId === r.id} onClick={() => decide(r.id, 'reject')}>
+                      Reject
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {unassigned.length > 0 && (
+        <>
+          <p className="modal-hint" style={{ marginTop: requests.length > 0 ? 16 : 0 }}>
+            Signed up, waiting on an organisation:
+          </p>
+          <table className="admin-table">
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Signed up</th>
+                <th>Assign</th>
+              </tr>
+            </thead>
+            <tbody>
+              {unassigned.map((u) => (
+                <tr key={u.id}>
+                  <td className="mono">{u.username}</td>
+                  <td className="mono">{seenLabel(u.createdAt)}</td>
+                  <td>
+                    <OrgChipPicker
+                      orgs={orgs}
+                      selectedIds={[]}
+                      onAdd={(orgId) => void run(() => api.addUserOrg(u.id, orgId)).then(reload)}
+                      onRemove={() => {}}
+                    />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+    </>
   );
 }

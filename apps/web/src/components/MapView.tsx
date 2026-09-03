@@ -2,9 +2,10 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import L from 'leaflet';
 import 'leaflet.heat';
 import { AGE_COLOR, ageColor, type GpsPoint, type TagSnapshot } from '@tagexplore/core';
+import { DEFAULT_ZOOM as DEFAULT_ZOOM_FALLBACK, SOUTH_AFRICA, type MapViewState } from '../mapDefaults.js';
 
-/** What a marker's fill colour means — picked by clicking one of the two legends. */
-export type MarkerColorMode = 'age' | 'latestGps';
+/** What a marker's fill colour means — picked by clicking one of the three legends. */
+export type MarkerColorMode = 'age' | 'latestGps' | 'discovery';
 
 interface Props {
   snapshots: TagSnapshot[];
@@ -21,6 +22,14 @@ interface Props {
   heatmapView: boolean;
   heatPoints: GpsPoint[];
   colorMode: MarkerColorMode;
+  /** Tags counted as "checked in" under the count panel's current window — only read in 'discovery' mode. */
+  discoveryIds: Set<string>;
+  /** Every org tag's own latest position, regardless of the list's toggles — what "Recentre" frames to. */
+  orgPoints: Array<[number, number]>;
+  /** Where the map opens — read once, on mount, so switching to the movement map and back keeps the view. */
+  initialView: MapViewState;
+  /** Fired on every pan/zoom so the parent can hand the same view back on remount. */
+  onViewChange: (view: MapViewState) => void;
 }
 
 /** True when the tag's most recent reading — not just some earlier one — carried a GPS fix. */
@@ -35,8 +44,6 @@ function hasFreshGps(tag: TagSnapshot): boolean {
  */
 const MAX_ZOOM = { Satellite: 17, Terrain: 19 } as const;
 type BaseName = keyof typeof MAX_ZOOM;
-
-const SOUTH_AFRICA: L.LatLngExpression = [-28.8, 24.5];
 
 /**
  * Tuned so a handful of nearby fixes only ever look faint, and it takes a real
@@ -70,6 +77,10 @@ export function MapView({
   heatmapView,
   heatPoints,
   colorMode,
+  discoveryIds,
+  orgPoints,
+  initialView,
+  onViewChange,
   children,
 }: Props): JSX.Element {
   const container = useRef<HTMLDivElement | null>(null);
@@ -84,13 +95,15 @@ export function MapView({
 
   // Leaflet owns its own DOM, so the map is created once and then mutated —
   // rebuilding it on every render would throw away the user's pan and zoom.
+  // `initialView` is only read here, at mount: it is where this box last left
+  // off (possibly on the movement map), not something to snap back to later.
   useEffect(() => {
     if (!container.current || map.current) return;
 
     // Zoom sits bottom-left: the detail card takes the top-left corner, the
     // basemap toggle the top-right, and the legend the bottom-right.
     const instance = L.map(container.current, { zoomControl: false, preferCanvas: true, maxZoom: MAX_ZOOM.Satellite })
-      .setView(SOUTH_AFRICA, 5);
+      .setView(initialView.center, initialView.zoom);
     L.control.zoom({ position: 'bottomleft' }).addTo(instance);
     const layers = createBaseLayers();
     layers.Satellite.addTo(instance);
@@ -133,6 +146,23 @@ export function MapView({
     };
   }, []);
 
+  // Reports every pan and zoom — including programmatic ones, like a fit or a
+  // recentre — back up so the movement map can pick up here when switched to.
+  useEffect(() => {
+    const instance = map.current;
+    if (!instance) return;
+    const report = (): void => {
+      const c = instance.getCenter();
+      onViewChange({ center: [c.lat, c.lng], zoom: instance.getZoom() });
+    };
+    instance.on('moveend', report);
+    instance.on('zoomend', report);
+    return () => {
+      instance.off('moveend', report);
+      instance.off('zoomend', report);
+    };
+  }, [onViewChange]);
+
   useEffect(() => {
     const instance = map.current;
     const layers = bases.current;
@@ -162,7 +192,15 @@ export function MapView({
     for (const tag of snapshots) {
       if (tag.lat === null || tag.lon === null) continue;
       const fillColor =
-        colorMode === 'age' ? ageColor(tag.fixAt, now) : hasFreshGps(tag) ? AGE_COLOR.live : AGE_COLOR.none;
+        colorMode === 'age'
+          ? ageColor(tag.fixAt, now)
+          : colorMode === 'discovery'
+            ? discoveryIds.has(tag.tagId)
+              ? AGE_COLOR.live
+              : AGE_COLOR.none
+            : hasFreshGps(tag)
+              ? AGE_COLOR.live
+              : AGE_COLOR.none;
       const marker = L.circleMarker([tag.lat, tag.lon], {
         radius: 7,
         color: '#12140F',
@@ -175,7 +213,7 @@ export function MapView({
       marker.addTo(group);
       byTag.current.set(tag.tagId, marker);
     }
-  }, [snapshots, onSelect, colorMode]);
+  }, [snapshots, onSelect, colorMode, discoveryIds]);
 
   // The two views are mutually exclusive: markers for individual tags, or a
   // density cloud of every raw fix — never both at once. The heat layer is
@@ -228,11 +266,24 @@ export function MapView({
       .map((t) => [t.lat as number, t.lon as number] as [number, number]);
 
     if (points.length === 0) {
-      instance.setView(SOUTH_AFRICA, 5);
+      instance.setView(SOUTH_AFRICA, DEFAULT_ZOOM_FALLBACK);
       return;
     }
     instance.fitBounds(L.latLngBounds(points), { padding: [50, 50], maxZoom: 15 });
   }, [snapshots]);
+
+  // Unlike `fit`, which frames whatever the list currently shows, this always
+  // frames every tag the org has a position for — the toggles and search box
+  // don't shrink what "recentre" means.
+  const recenter = useCallback((): void => {
+    const instance = map.current;
+    if (!instance) return;
+    if (orgPoints.length === 0) {
+      instance.setView(SOUTH_AFRICA, DEFAULT_ZOOM_FALLBACK);
+      return;
+    }
+    instance.fitBounds(L.latLngBounds(orgPoints), { padding: [50, 50], maxZoom: 15 });
+  }, [orgPoints]);
 
   // Explicit request from the header's wordmark.
   const firstFit = useRef(true);
@@ -263,13 +314,11 @@ export function MapView({
           reach the imagery CDN to get the picture back.
         </div>
       )}
-      <button
-        className="pill"
-        style={{ position: 'absolute', right: 14, top: 14, zIndex: 600 }}
-        onClick={() => setBaseName((n) => (n === 'Satellite' ? 'Terrain' : 'Satellite'))}
-      >
-        {baseName}
-      </button>
+      <div className="map-topright" style={{ position: 'absolute', right: 14, top: 14, zIndex: 600 }}>
+        <button className="pill pill-recentre" onClick={recenter} title="Frame every tag the organisation has a position for">
+          Recentre
+        </button>
+      </div>
       {children}
     </main>
   );

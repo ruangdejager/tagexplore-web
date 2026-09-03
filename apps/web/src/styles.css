@@ -68,6 +68,13 @@ textarea:focus {
   border-color: var(--ink-dim);
 }
 
+/* The native calendar icon renders near-black by default, invisible against
+   this app's dark inputs — inverted to match the input's own text colour. */
+input[type='date']::-webkit-calendar-picker-indicator {
+  filter: invert(1);
+  cursor: pointer;
+}
+
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -157,6 +164,21 @@ header {
   border-color: var(--veld-lit);
 }
 
+/* Recentre stands apart from the other pills — it's the one control that can
+   rescue you from a map that's drifted somewhere empty, so it needs to read
+   as more than chrome. */
+.pill-recentre {
+  font-size: 13px;
+  padding: 8px 16px;
+  color: #ffffff;
+  border: 2px solid var(--sky);
+}
+.pill-recentre:hover {
+  color: #ffffff;
+  border-color: var(--sky);
+  background: rgba(62, 154, 216, 0.18);
+}
+
 select.pill {
   background: var(--panel);
   padding: 5px 8px;
@@ -169,8 +191,70 @@ aside {
   background: var(--panel);
   border-right: 1px solid var(--line);
   display: flex;
+  flex-direction: row;
+  min-height: 0;
+}
+
+.aside-body {
+  flex: 1;
+  display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
+}
+
+/* A narrow rail to the left of the tag list, always this same width — the
+   list's width never changes. Expanding it lays the two view options over
+   the list instead, as a floating panel, rather than shrinking or pushing
+   anything. */
+.view-panel {
+  position: relative;
+  flex: none;
+  width: 40px;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--line);
+  background: var(--panel-2);
+}
+.view-panel-toggle {
+  padding: 12px 0;
+  text-align: center;
+  color: var(--ink-dim);
+  font-size: 16px;
+}
+.view-panel-toggle:hover {
+  color: var(--ink);
+}
+.view-panel-options {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 100%;
+  width: 140px;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel-2);
+  border-right: 1px solid var(--line);
+  box-shadow: 6px 0 16px rgba(0, 0, 0, 0.4);
+  z-index: 50;
+}
+.view-panel-option {
+  padding: 10px 12px;
+  text-align: left;
+  font-family: var(--display);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 12.5px;
+  color: var(--ink-dim);
+  border-bottom: 1px solid var(--line);
+}
+.view-panel-option:hover {
+  color: var(--ink);
+}
+.view-panel-option[data-active='1'] {
+  color: var(--ink);
+  background: var(--panel);
+  border-left: 2px solid var(--veld-lit);
 }
 
 .filters {
@@ -378,7 +462,8 @@ main {
   min-height: 320px;
 }
 
-#map {
+#map,
+#movement-map {
   position: absolute;
   inset: 0;
   background: #0c0e09;
@@ -399,6 +484,11 @@ main {
   background: var(--panel) !important;
   color: var(--ink) !important;
   border-color: var(--line) !important;
+}
+
+.map-topright {
+  display: flex;
+  gap: 8px;
 }
 
 .map-note {
@@ -507,6 +597,32 @@ main {
   line-height: 1;
 }
 
+/* --- Movement map ----------------------------------------------------------- */
+
+/* Sized to the "Movement replay" title, not the widest control — every
+   control below stacks full-width instead of trying to fit two across. */
+.movement-controls {
+  width: 230px;
+}
+.movement-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-dim);
+}
+.movement-field input[type='date'],
+.movement-field select {
+  width: 100%;
+  font-size: 11.5px;
+  padding: 6px 7px;
+}
+.movement-controls input[type='range'] {
+  accent-color: var(--veld-lit);
+}
+
 /* Collapsed by default to a single line — the header is the whole hit target
    for expanding it, and the panel itself is absent from the DOM (not just
    hidden) whenever there is nothing to report. */
@@ -572,6 +688,14 @@ main {
 }
 .legend[data-active='0']:hover {
   opacity: 0.85;
+}
+.legend-title {
+  font-family: var(--display);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 11px;
+  color: var(--ink);
+  margin-bottom: 1px;
 }
 .legend i {
   display: inline-block;

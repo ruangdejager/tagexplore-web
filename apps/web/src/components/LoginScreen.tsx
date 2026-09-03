@@ -72,7 +72,8 @@ export function LoginScreen({ auth }: Props): JSX.Element {
 
           {mode === 'signup' && (
             <p className="modal-hint">
-              At least 8 characters. A new account can see nothing until an admin puts it in an organisation.
+              At least 8 characters. Signing up lets an admin know you're waiting — you'll see data once they put you
+              in an organisation.
             </p>
           )}
           {auth.error && <p className="modal-error">{auth.error}</p>}

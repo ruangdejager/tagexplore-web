@@ -16,6 +16,13 @@ export interface SnapshotState {
   from: number;
   to: number;
   loading: boolean;
+  /**
+   * True once *this* org's first fetch has settled — false again the instant
+   * `orgId` changes to one that hasn't loaded yet, but untouched by a
+   * background refresh of the same org, so the caller can gate on "never
+   * loaded this org" without the periodic auto-refresh flipping it off.
+   */
+  hasLoaded: boolean;
   error: string | null;
   refresh: () => void;
 }
@@ -25,6 +32,10 @@ export function useSnapshots(orgId: string | null, hours: number, enabled: boole
   const [devices, setDevices] = useState<DeviceRow[]>([]);
   const [range, setRange] = useState({ from: 0, to: 0 });
   const [loading, setLoading] = useState(false);
+  // The org id the data currently in state actually belongs to — compared
+  // against the live `orgId` below rather than kept as its own true/false, so
+  // switching orgs is detected without a separate reset effect.
+  const [loadedOrgId, setLoadedOrgId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
 
@@ -52,7 +63,9 @@ export function useSnapshots(orgId: string | null, hours: number, enabled: boole
         setError(err instanceof Error ? err.message : 'Could not load tags.');
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (cancelled) return;
+        setLoading(false);
+        setLoadedOrgId(orgId);
       });
 
     return () => {
@@ -66,5 +79,5 @@ export function useSnapshots(orgId: string | null, hours: number, enabled: boole
     return () => clearInterval(timer);
   }, [enabled, refresh]);
 
-  return { snapshots, devices, from: range.from, to: range.to, loading, error, refresh };
+  return { snapshots, devices, from: range.from, to: range.to, loading, hasLoaded: enabled && loadedOrgId === orgId, error, refresh };
 }
