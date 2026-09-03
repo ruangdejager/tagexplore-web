@@ -511,6 +511,72 @@ main {
   line-height: 1.5;
 }
 
+/* --- Ruler ------------------------------------------------------------------- */
+
+.ruler-menu {
+  position: absolute;
+  z-index: 700;
+  background: rgba(27, 30, 23, 0.96);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 4px;
+  backdrop-filter: blur(6px);
+}
+.ruler-menu button {
+  display: block;
+  width: 100%;
+  white-space: nowrap;
+  background: transparent;
+  border: none;
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: 2px;
+  cursor: pointer;
+}
+.ruler-menu button:hover {
+  background: rgba(232, 228, 214, 0.1);
+}
+
+/* The distance label: a small bubble centred above its ruler's midpoint, with
+   its own close cross right next to the text rather than a control elsewhere
+   on the map — there can be several of these live at once, one per ruler. */
+.ruler-label-wrap {
+  background: transparent;
+  border: none;
+}
+.ruler-label {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform: translate(-50%, -130%);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(27, 30, 23, 0.94);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 3px 4px 3px 7px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.ruler-label-clear {
+  background: transparent;
+  border: none;
+  color: var(--ink-dim);
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 3px;
+  cursor: pointer;
+}
+.ruler-label-clear:hover {
+  color: var(--ink);
+}
+
 /* --- Reader marker & link flow ----------------------------------------------- */
 
 /* A reader's own position: bigger than a tag marker (18px against a tag's

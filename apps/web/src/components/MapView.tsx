@@ -142,6 +142,11 @@ function formatFrameTime(ms: number): string {
   return new Date(ms).toLocaleString('en-ZA', { timeZone: 'Africa/Johannesburg', hour12: false });
 }
 
+/** Always meters, per the ruler's own unit — comma-grouped once it gets into the thousands. */
+function formatDistance(meters: number): string {
+  return `${Math.round(meters).toLocaleString()} m`;
+}
+
 function createBaseLayers(): Record<BaseName, L.TileLayer> {
   return {
     Satellite: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
@@ -206,6 +211,58 @@ export function MapView({
   const [baseName, setBaseName] = useState<BaseName>('Satellite');
   const [tilesBlocked, setTilesBlocked] = useState(false);
 
+  // --- Ruler ---------------------------------------------------------------
+  // Each right-click "Measure distance" starts one, and several can be live
+  // on the map at once — each with its own clear control, rather than one
+  // ruler slot the next measurement would overwrite. Its own SVG renderer for
+  // the same reason the link and geofence layers get one: it's cleared and
+  // redrawn on every mouse move while measuring, and that churn shouldn't
+  // touch the canvas renderer the tag markers depend on.
+  const rulerLayer = useRef<L.LayerGroup | null>(null);
+  const rulerRenderer = useRef<L.SVG | null>(null);
+  // Mirrors `measuringId` for the map's click/contextmenu/mousemove listeners
+  // and the tag markers' own click handlers — all attached on a schedule that
+  // doesn't include the ruler state, so they'd otherwise close over a stale
+  // value.
+  const measuringIdRef = useRef<string | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; latlng: L.LatLng } | null>(null);
+  const [rulers, setRulers] = useState<Array<{ id: string; start: L.LatLng; end: L.LatLng | null }>>([]);
+  const [measuringId, setMeasuringId] = useState<string | null>(null);
+  const [rulerHover, setRulerHover] = useState<L.LatLng | null>(null);
+
+  const startMeasurement = useCallback((latlng: L.LatLng): void => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    setRulers((rs) => [...rs, { id, start: latlng, end: null }]);
+    setMeasuringId(id);
+    measuringIdRef.current = id;
+    setCtxMenu(null);
+  }, []);
+
+  // Also called from a tag marker's own click handler, so finishing a
+  // measurement on top of a tag wins over selecting it.
+  const finishMeasurement = useCallback((latlng: L.LatLng): void => {
+    const id = measuringIdRef.current;
+    if (!id) return;
+    setRulers((rs) => rs.map((r) => (r.id === id ? { ...r, end: latlng } : r)));
+    setMeasuringId(null);
+    measuringIdRef.current = null;
+    setRulerHover(null);
+  }, []);
+
+  // A right-click while measuring backs out of it instead of opening the menu.
+  const cancelMeasurement = useCallback((): void => {
+    const id = measuringIdRef.current;
+    if (!id) return;
+    setRulers((rs) => rs.filter((r) => r.id !== id));
+    setMeasuringId(null);
+    measuringIdRef.current = null;
+    setRulerHover(null);
+  }, []);
+
+  const clearRuler = useCallback((id: string): void => {
+    setRulers((rs) => rs.filter((r) => r.id !== id));
+  }, []);
+
   const [fromDate, setFromDate] = useState(() => toDateInput(Date.now() - 3 * MOVEMENT_DAY_MS));
   const [toDate, setToDate] = useState(() => toDateInput(Date.now()));
   const [speed, setSpeed] = useState<number>(1);
@@ -256,7 +313,33 @@ export function MapView({
     geofenceLayer.current = L.layerGroup();
     linkRenderer.current = L.svg({ padding: 0.5 });
     geofenceRenderer.current = L.svg({ padding: 0.5 });
+    rulerLayer.current = L.layerGroup().addTo(instance);
+    rulerRenderer.current = L.svg({ padding: 0.5 });
     // heat.current and links.current are created lazily — see their own effects below.
+
+    // Right-click opens a one-item menu ("Measure distance") at the cursor;
+    // Leaflet suppresses the browser's own context menu automatically as soon
+    // as anything listens for this event. While a measurement is already in
+    // progress, a right-click backs out of it instead of opening the menu — no
+    // menu for what would just be a second start point. A left click elsewhere
+    // always closes the menu, and — only while measuring — sets the ruler's
+    // end point (a tag marker's own click handler skips its normal
+    // select-on-click while measuring, so this same handler finishes the
+    // measurement when the click lands on one).
+    instance.on('contextmenu', (e: L.LeafletMouseEvent) => {
+      if (measuringIdRef.current) {
+        cancelMeasurement();
+        return;
+      }
+      setCtxMenu({ x: e.containerPoint.x, y: e.containerPoint.y, latlng: e.latlng });
+    });
+    instance.on('click', (e: L.LeafletMouseEvent) => {
+      setCtxMenu(null);
+      if (measuringIdRef.current) finishMeasurement(e.latlng);
+    });
+    instance.on('mousemove', (e: L.LeafletMouseEvent) => {
+      if (measuringIdRef.current) setRulerHover(e.latlng);
+    });
 
     // The grid settles its own size after the first paint; without this the map
     // renders into a zero-height box and stays blank.
@@ -319,7 +402,13 @@ export function MapView({
         fillColor,
         fillOpacity: 0.95,
       });
-      marker.on('click', () => onSelect(tag.tagId));
+      marker.on('click', () => {
+        // A measurement in progress takes priority over selecting the tag —
+        // the click still bubbles up to the map's own handler, which finishes
+        // the measurement on top of this marker's position.
+        if (measuringIdRef.current) return;
+        onSelect(tag.tagId);
+      });
       marker.bindTooltip(tag.label ? `${tag.tagId} · ${tag.label}` : tag.tagId, { direction: 'top', offset: [0, -6] });
       marker.addTo(group);
       byTag.current.set(tag.tagId, marker);
@@ -528,6 +617,72 @@ export function MapView({
     }
   }, [geofences]);
 
+  // Draws every ruler: a dot at its start, and — once there's a second point,
+  // whether that's the confirmed end or (for whichever one is still being
+  // measured) just the live cursor position — a line out to it. A finished
+  // measurement also gets a label with its distance and a small × right next
+  // to the text, wired up by hand since it needs to sit inside the marker's
+  // own HTML to land beside the text rather than in a fixed corner of the
+  // map. Redrawn from scratch on every change; the layer only ever holds a
+  // handful of shapes.
+  useEffect(() => {
+    const group = rulerLayer.current;
+    if (!group) return;
+    group.clearLayers();
+
+    for (const ruler of rulers) {
+      L.circleMarker(ruler.start, {
+        radius: 4,
+        color: '#E8E4D6',
+        weight: 2,
+        fillColor: '#E8E4D6',
+        fillOpacity: 1,
+        interactive: false,
+        renderer: rulerRenderer.current ?? undefined,
+      }).addTo(group);
+
+      const end = ruler.end ?? (ruler.id === measuringId ? rulerHover : null);
+      if (!end) continue;
+
+      L.polyline([ruler.start, end], {
+        color: '#E8E4D6',
+        weight: 2,
+        opacity: 0.9,
+        dashArray: ruler.end ? undefined : '6 6',
+        interactive: false,
+        renderer: rulerRenderer.current ?? undefined,
+      }).addTo(group);
+
+      L.circleMarker(end, {
+        radius: 4,
+        color: '#E8E4D6',
+        weight: 2,
+        fillColor: '#E8E4D6',
+        fillOpacity: 1,
+        interactive: false,
+        renderer: rulerRenderer.current ?? undefined,
+      }).addTo(group);
+
+      if (!ruler.end) continue; // still being measured — no label yet
+
+      const mid: [number, number] = [(ruler.start.lat + end.lat) / 2, (ruler.start.lng + end.lng) / 2];
+      const labelMarker = L.marker(mid, {
+        icon: L.divIcon({
+          className: 'ruler-label-wrap',
+          html: `<span class="ruler-label"><span class="ruler-label-text">${formatDistance(
+            ruler.start.distanceTo(end),
+          )}</span><button type="button" class="ruler-label-clear" aria-label="Clear this measurement">×</button></span>`,
+          iconSize: [0, 0],
+        }),
+      }).addTo(group);
+      const btn = labelMarker.getElement()?.querySelector('.ruler-label-clear');
+      btn?.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        clearRuler(ruler.id);
+      });
+    }
+  }, [rulers, measuringId, rulerHover, clearRuler]);
+
   // Selection is a style change on the existing markers, so picking a tag from
   // the sidebar does not rebuild the layer or disturb the view.
   useEffect(() => {
@@ -707,6 +862,12 @@ export function MapView({
           Recentre
         </button>
       </div>
+
+      {ctxMenu && (
+        <div className="ruler-menu" style={{ left: ctxMenu.x, top: ctxMenu.y }}>
+          <button onClick={() => startMeasurement(ctxMenu.latlng)}>Measure distance</button>
+        </div>
+      )}
 
       {mode === 'global' ? (
         children
