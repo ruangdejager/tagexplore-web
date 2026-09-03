@@ -30,6 +30,7 @@ function reading(partial: Partial<ReadingInput> & Pick<ReadingInput, 'bracketAt'
     hasGps: false,
     fwPatch: 3,
     gpsAgeSeconds: null,
+    linkId: null,
     ...partial,
   };
 }
@@ -77,6 +78,21 @@ describe('readings', () => {
     expect(snapshot?.fixAt).toBe(T0 - 2 * HOUR);
     expect(snapshot?.lat).toBeCloseTo(-33.9633, 4);
     expect(snapshot?.gpsAgeSeconds).toBe(115);
+  });
+
+  it('carries the link id through to the snapshot, and reports none when there was no link', () => {
+    store.addOrgTags(ORG, ['3E1E', '441F']);
+    store.writeReadings(
+      [
+        reading({ bracketAt: T0, tagId: '3E1E', linkId: 'E20' }),
+        reading({ bracketAt: T0, tagId: '441F', linkId: null }),
+      ],
+      [],
+    );
+
+    const snapshots = store.tagSnapshots({ orgId: ORG, from: T0 - HOUR, to: T0 + HOUR });
+    expect(snapshots.find((s) => s.tagId === '3E1E')?.linkId).toBe('E20');
+    expect(snapshots.find((s) => s.tagId === '441F')?.linkId).toBeNull();
   });
 
   it('counts a round once even when two of the org’s devices heard the same tag', () => {
@@ -238,6 +254,20 @@ describe('devices', () => {
     store.writeReadings([reading({ bracketAt: T0, tagId: '3E1E' })], []);
     expect(store.latestBracketFor(DEVICE)).toBe(T0);
     expect(store.latestBracketFor(SECOND_DEVICE)).toBeNull();
+  });
+
+  it('has no radio id or position until they are set by hand and by ingest, respectively', () => {
+    expect(store.getDevice(DEVICE)).toMatchObject({ radioId: null, lat: null, lon: null, gpsUpdatedAt: null });
+
+    store.updateDevice(DEVICE, { radioId: 'E20' });
+    store.setDevicePosition(DEVICE, -33.9637, 18.8383, T0);
+
+    expect(store.getDevice(DEVICE)).toMatchObject({
+      radioId: 'E20',
+      lat: -33.9637,
+      lon: 18.8383,
+      gpsUpdatedAt: T0,
+    });
   });
 });
 

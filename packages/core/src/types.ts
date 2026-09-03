@@ -18,6 +18,13 @@ export interface TagReading {
   fwVersionPatch: number | null;
   /** Seconds between the fix being taken and it being reported. Only in "basic" mode. */
   gpsAgeSeconds: number | null;
+  /**
+   * The id of the tag this one's data actually relayed through to reach the
+   * reader — the mesh's real next hop, distinct from `hops`' plain count. Only
+   * on newer firmware; null when the column is absent, blank, or `0` (the
+   * firmware's own "no link yet" value).
+   */
+  linkId: string | null;
 }
 
 /** One `*HH:MM:SS(+02:00)` discovery block from one device's log. */

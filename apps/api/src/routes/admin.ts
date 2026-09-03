@@ -186,12 +186,14 @@ export function createAdminApi(deps: AdminDeps): Hono<Env> {
     const imei = typeof body['imei'] === 'string' ? body['imei'].trim() : '';
     const orgId = typeof body['orgId'] === 'string' ? body['orgId'] : '';
     const label = typeof body['label'] === 'string' ? body['label'].trim() : '';
+    const radioIdRaw = typeof body['radioId'] === 'string' ? body['radioId'].trim().toUpperCase() : '';
+    const radioId = radioIdRaw === '' ? null : radioIdRaw;
 
     if (!IMEI_PATTERN.test(imei)) return c.json({ error: 'An IMEI is 14-16 digits.' }, 400);
     if (!deps.store.getOrg(orgId)) return c.json({ error: 'No organisation with that id.' }, 404);
     if (deps.store.getDevice(imei)) return c.json({ error: 'That IMEI is already registered.' }, 409);
 
-    deps.store.createDevice(imei, orgId, label);
+    deps.store.createDevice(imei, orgId, label, radioId);
     return c.json({ device: deps.store.getDevice(imei) }, 201);
   });
 
@@ -204,6 +206,10 @@ export function createAdminApi(deps: AdminDeps): Hono<Env> {
 
     if (typeof body['label'] === 'string') patch.label = body['label'].trim();
     if (typeof body['active'] === 'boolean') patch.active = body['active'];
+    if (typeof body['radioId'] === 'string') {
+      const trimmed = body['radioId'].trim().toUpperCase();
+      patch.radioId = trimmed === '' ? null : trimmed;
+    }
     if (typeof body['orgId'] === 'string') {
       if (!deps.store.getOrg(body['orgId'])) return c.json({ error: 'No organisation with that id.' }, 404);
       patch.orgId = body['orgId'];

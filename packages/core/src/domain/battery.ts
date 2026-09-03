@@ -42,3 +42,18 @@ export function batteryLevel(mv: number | null | undefined): BatteryLevel {
 export function batteryColor(mv: number | null | undefined): string {
   return BATTERY_COLOR[batteryLevel(mv)];
 }
+
+/**
+ * A 0-100 fill for a battery bar — the same 3350-4200mV range the trend
+ * chart opens on, so a bar and a chart read the same reading the same way.
+ * Null (never reported) rather than 0 for an unknown reading, so the caller
+ * can draw an empty bar instead of a misleadingly "dead" one.
+ */
+const BATTERY_BAR_LO = 3350;
+const BATTERY_BAR_HI = 4200;
+
+export function batteryPercent(mv: number | null | undefined): number | null {
+  if (mv === null || mv === undefined || Number.isNaN(mv)) return null;
+  const pct = ((mv - BATTERY_BAR_LO) / (BATTERY_BAR_HI - BATTERY_BAR_LO)) * 100;
+  return Math.max(0, Math.min(100, pct));
+}

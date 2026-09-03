@@ -8,12 +8,10 @@ import { CountPanel } from './components/CountPanel.js';
 import { LoginScreen } from './components/LoginScreen.js';
 import { MapLegend } from './components/MapLegend.js';
 import { MapView, type MarkerColorMode } from './components/MapView.js';
-import { MovementMap } from './components/MovementMap.js';
 import { OrgRequestPanel } from './components/OrgRequestPanel.js';
 import { TagCard } from './components/TagCard.js';
 import { TagList } from './components/TagList.js';
 import { ViewPanel, type MainView } from './components/ViewPanel.js';
-import { DEFAULT_MAP_VIEW } from './mapDefaults.js';
 import { useAuth } from './state/useAuth.js';
 import { useHeatPoints } from './state/useHeatPoints.js';
 import { useSnapshots } from './state/useSnapshots.js';
@@ -71,13 +69,11 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   const [query, setQuery] = useState('');
   const [hiddenFromMap, setHiddenFromMap] = useState<Set<string>>(new Set());
   const [heatmapView, setHeatmapView] = useState(false);
+  const [linkView, setLinkView] = useState(false);
   const [heatmapHours, setHeatmapHours] = useState(72);
   const [colorMode, setColorMode] = useState<MarkerColorMode>('discovery');
   const [discoveryWindow, setDiscoveryWindow] = useState<DiscoveryWindow>('6');
   const [mainView, setMainView] = useState<MainView>('global');
-  // Shared between the global map and the movement map so switching between
-  // them keeps whatever was panned and zoomed to, instead of resetting.
-  const [mapView, setMapView] = useState(DEFAULT_MAP_VIEW);
   const [selectedTagId, setSelectedTagId] = useState<string | null>(null);
   const [fitNonce, setFitNonce] = useState(0);
   const [trendTags, setTrendTags] = useState<Set<string>>(new Set());
@@ -310,16 +306,36 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
         <ViewPanel view={mainView} onChange={setMainView} />
         <div className="aside-body">
           <div className="filters">
-            <div className="filter-row">
-              {mainView === 'global' && (
-                <button className="pill" data-on={heatmapView ? '1' : '0'} onClick={() => setHeatmapView((v) => !v)}>
+            <button className="pill" style={{ width: '100%' }} onClick={refresh} title="Reload now">
+              Refresh
+            </button>
+
+            {mainView === 'global' && (
+              <div className="filter-row-split">
+                <button
+                  className="pill"
+                  data-on={heatmapView ? '1' : '0'}
+                  disabled={linkView}
+                  onClick={() => setHeatmapView((v) => !v)}
+                  title={linkView ? 'Turn off Link view to use this' : undefined}
+                >
                   Heatmap view
                 </button>
-              )}
-              <button className="pill" onClick={refresh} title="Reload now">
-                Refresh
-              </button>
-            </div>
+                <button
+                  className="pill"
+                  data-on={linkView ? '1' : '0'}
+                  disabled={heatmapView}
+                  onClick={() => setLinkView((v) => !v)}
+                  title={
+                    heatmapView
+                      ? 'Turn off Heatmap view to use this'
+                      : 'Dotted lines from each tag in the latest discovery to the tag its data relayed through'
+                  }
+                >
+                  Link view
+                </button>
+              </div>
+            )}
 
             {mainView === 'global' && (
               <select
@@ -357,54 +373,47 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
         </div>
       </aside>
 
-      {mainView === 'global' ? (
-        <MapView
-          snapshots={mapTags}
-          selectedTagId={selectedTagId}
-          onSelect={setSelectedTagId}
-          fitNonce={fitNonce}
-          autoFitKey={orgId}
-          heatmapView={heatmapView}
-          heatPoints={heatPoints}
-          colorMode={colorMode}
-          discoveryIds={discoveryIds}
-          orgPoints={orgPoints}
-          initialView={mapView}
-          onViewChange={setMapView}
-        >
-          <div className="map-topleft">
-            <CountPanel
-              snapshots={toggledSnapshots}
+      <MapView
+        mode={mainView}
+        snapshots={mapTags}
+        selectedTagId={selectedTagId}
+        onSelect={setSelectedTagId}
+        fitNonce={fitNonce}
+        autoFitKey={orgId}
+        heatmapView={heatmapView}
+        heatPoints={heatPoints}
+        linkView={linkView}
+        devices={devices}
+        colorMode={colorMode}
+        discoveryIds={discoveryIds}
+        orgId={orgId}
+        movementSnapshots={toggledSnapshots}
+        orgPoints={orgPoints}
+      >
+        <div className="map-topleft">
+          <CountPanel
+            snapshots={toggledSnapshots}
+            now={now}
+            orgId={orgId}
+            windowChoice={discoveryWindow}
+            onWindowChange={setDiscoveryWindow}
+          />
+          <AlertsPanel watchedTagIds={watchedTagIds} snapshots={snapshots} tags={whitelist} now={now} />
+          {selected && (
+            <TagCard
+              tag={selected}
+              devices={devices}
               now={now}
-              orgId={orgId}
-              windowChoice={discoveryWindow}
-              onWindowChange={setDiscoveryWindow}
+              onClose={() => setSelectedTagId(null)}
+              onShowTrend={(tagId) => {
+                setTrendTags(new Set([tagId]));
+                setTrendExpanded(true);
+              }}
             />
-            <AlertsPanel watchedTagIds={watchedTagIds} snapshots={snapshots} tags={whitelist} now={now} />
-            {selected && (
-              <TagCard
-                tag={selected}
-                devices={devices}
-                now={now}
-                onClose={() => setSelectedTagId(null)}
-                onShowTrend={(tagId) => {
-                  setTrendTags(new Set([tagId]));
-                  setTrendExpanded(true);
-                }}
-              />
-            )}
-          </div>
-          <MapLegend mode={colorMode} onChange={setColorMode} />
-        </MapView>
-      ) : (
-        <MovementMap
-          orgId={orgId}
-          snapshots={toggledSnapshots}
-          orgPoints={orgPoints}
-          initialView={mapView}
-          onViewChange={setMapView}
-        />
-      )}
+          )}
+        </div>
+        <MapLegend mode={colorMode} onChange={setColorMode} />
+      </MapView>
 
       <BatteryTrends
         orgId={orgId}

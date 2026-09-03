@@ -163,6 +163,15 @@ header {
   background: var(--panel-2);
   border-color: var(--veld-lit);
 }
+.pill:disabled {
+  color: var(--ink-dim);
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.pill:disabled:hover {
+  color: var(--ink-dim);
+  border-color: var(--line);
+}
 
 /* Recentre stands apart from the other pills — it's the one control that can
    rescue you from a map that's drifted somewhere empty, so it needs to read
@@ -351,17 +360,16 @@ aside {
   letter-spacing: 0.05em;
 }
 
-.filter-row {
+/* Heatmap view and Link view: two equal-width buttons that together span the
+   same width as Refresh above them, edges aligned — not two independent
+   controls, but a single either/or choice split in half. */
+.filter-row-split {
   display: flex;
   gap: 8px;
-  align-items: center;
-  font-size: 12px;
-  color: var(--ink-dim);
 }
-.filter-row select {
+.filter-row-split .pill {
   flex: 1;
-  font-size: 12px;
-  padding: 6px 8px;
+  text-align: center;
 }
 
 .list {
@@ -372,10 +380,10 @@ aside {
 
 .row {
   display: grid;
-  grid-template-columns: auto 3px 1fr auto;
+  grid-template-columns: auto 3px 1fr 56px;
   gap: 10px;
   align-items: center;
-  padding: 9px 16px 9px 13px;
+  padding: 8px 16px 8px 13px;
   border-bottom: 1px solid rgba(51, 58, 44, 0.5);
   cursor: pointer;
   width: 100%;
@@ -386,7 +394,7 @@ aside {
   background: var(--panel-2);
 }
 .bar {
-  height: 30px;
+  height: 20px;
   border-radius: 2px;
 }
 .row-visibility {
@@ -417,22 +425,19 @@ aside {
   font-family: var(--body);
   font-size: 12px;
 }
-.row .meta {
-  font-size: 11px;
-  color: var(--ink-dim);
-  font-family: var(--mono);
-  margin-top: 2px;
+.row .batt-bar {
+  width: 56px;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  overflow: hidden;
+  flex: none;
 }
-.row .batt {
-  font-family: var(--mono);
-  font-size: 11.5px;
-  text-align: right;
-  white-space: nowrap;
-}
-.row .batt small {
+.row .batt-bar-fill {
   display: block;
-  color: var(--ink-dim);
-  font-size: 10px;
+  height: 100%;
+  border-radius: 3px 0 0 3px;
 }
 
 .empty {
@@ -462,8 +467,7 @@ main {
   min-height: 320px;
 }
 
-#map,
-#movement-map {
+#map {
   position: absolute;
   inset: 0;
   background: #0c0e09;
@@ -505,6 +509,73 @@ main {
   color: var(--ink-dim);
   max-width: 240px;
   line-height: 1.5;
+}
+
+/* --- Reader marker & link flow ----------------------------------------------- */
+
+/* A reader's own position: bigger than a tag marker (18px against a tag's
+   14px) and unmistakably purple against every green, yellow, orange or red
+   tag colour, with an intense pinging ring so it reads as a fixed landmark
+   rather than another tag. */
+.device-marker-wrap {
+  background: transparent;
+  border: none;
+}
+.device-marker-dot {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #a855f7;
+  border: 2px solid #12140f;
+  animation: device-glow 1.4s ease-in-out infinite;
+}
+.device-marker-ping {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #a855f7;
+  animation: device-ping 1.4s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+@keyframes device-ping {
+  0% {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(3.2);
+    opacity: 0;
+  }
+}
+@keyframes device-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 6px rgba(168, 85, 247, 0.8);
+  }
+  50% {
+    box-shadow: 0 0 16px rgba(168, 85, 247, 1);
+  }
+}
+
+/* The "ball" pushed along a link line, origin toward tag — its own JS-driven
+   position is all the animation loop controls; the pulsing look (a beat every
+   2s, matching the loop's 0.5Hz) lives entirely here. */
+.link-ball-wrap {
+  background: transparent;
+  border: none;
+}
+.link-ball {
+  display: block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #a9f0cf;
+  box-shadow: 0 0 7px 2px rgba(79, 191, 139, 0.9);
 }
 
 /* Positioned by their wrapper, .map-topleft, not by themselves — that is what
@@ -973,7 +1044,7 @@ footer {
   overflow-y: auto;
 }
 .modal-wide {
-  width: min(920px, 100%);
+  width: min(1200px, 96vw);
 }
 
 .modal h2 {

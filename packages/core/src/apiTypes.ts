@@ -58,6 +58,14 @@ export interface DeviceRow {
   pollOffsetMinutes: number;
   lastIngestAt: number | null;
   lastIngestStatus: string | null;
+  /** The mesh radio id this reader identifies itself as inside a tag's `RssiSrc`
+   *  column — set by hand; null until an admin fills it in. */
+  radioId: string | null;
+  /** The reader's own position, read off the events API rather than the discovery
+   *  logs (which never carry it) — null until the first successful read. */
+  lat: number | null;
+  lon: number | null;
+  gpsUpdatedAt: number | null;
   createdAt: number;
 }
 
@@ -125,6 +133,9 @@ export interface TagSnapshot {
   waveCount: number | null;
   movementState: number | null;
   fwVersionPatch: number | null;
+  /** The id of the tag this reading relayed through to reach the reader — the
+   *  mesh's real next hop. Only on newer firmware; null when there was none. */
+  linkId: string | null;
   /** The device whose log carried the most recent reading. */
   sourceDeviceImei: string;
   /** Most recent GPS-carrying reading. Null when the tag has never reported a fix. */

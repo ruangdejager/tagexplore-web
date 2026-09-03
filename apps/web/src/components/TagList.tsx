@@ -1,4 +1,4 @@
-import { AGE_COLOR, batteryColor, formatAge, positionAge, type PositionAge, type TagSnapshot } from '@tagexplore/core';
+import { AGE_COLOR, batteryColor, batteryPercent, positionAge, type PositionAge, type TagSnapshot } from '@tagexplore/core';
 
 interface Props {
   snapshots: TagSnapshot[];
@@ -31,6 +31,7 @@ export function TagList({
       {snapshots.map((tag) => {
         const age: PositionAge = positionAge(tag.fixAt, now);
         const shownOnMap = !hiddenFromMap.has(tag.tagId);
+        const pct = batteryPercent(tag.batteryMv);
         return (
           <div
             key={tag.tagId}
@@ -56,21 +57,15 @@ export function TagList({
               }}
             />
             <span className="bar" style={{ background: AGE_COLOR[age] }} />
-            <span>
-              <span className="sn">
-                {tag.tagId}
-                {tag.label && <span className="tag-label">{tag.label}</span>}
-              </span>
-              <span className="meta">
-                {tag.lat === null ? 'no fix' : `fix ${formatAge(now - (tag.fixAt as number))} ago`} · seen{' '}
-                {formatAge(now - tag.lastSeenAt)} ago
-              </span>
+            <span className="sn">
+              {tag.tagId}
+              {tag.label && <span className="tag-label">{tag.label}</span>}
             </span>
-            <span className="batt">
-              <span style={{ color: batteryColor(tag.batteryMv) }}>
-                {tag.batteryMv === null ? '—' : `${tag.batteryMv}mV`}
-              </span>
-              <small>{tag.readingCount} rounds</small>
+            <span
+              className="batt-bar"
+              title={tag.batteryMv === null ? 'Battery unknown' : `${tag.batteryMv}mV`}
+            >
+              <span className="batt-bar-fill" style={{ width: `${pct ?? 0}%`, background: batteryColor(tag.batteryMv) }} />
             </span>
           </div>
         );

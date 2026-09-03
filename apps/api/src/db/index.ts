@@ -116,6 +116,16 @@ CREATE TABLE IF NOT EXISTS devices (
   poll_offset_minutes     INTEGER NOT NULL DEFAULT 10,
   last_ingest_at          INTEGER,
   last_ingest_status      TEXT,
+  -- The mesh radio id this reader identifies itself as inside a tag's own
+  -- RssiSrc column — set by hand, since nothing in the logs or events API
+  -- names it. Lets the link-view map draw a tag's line all the way back to
+  -- the reader itself when a tag reached it directly, not through another tag.
+  radio_id                TEXT,
+  -- The reader's own position — not reported in the discovery logs at all,
+  -- so it's read separately off the events API and cached here.
+  gps_lat                 REAL,
+  gps_lon                 REAL,
+  gps_updated_at          INTEGER,
   created_at              INTEGER NOT NULL
 );
 
@@ -149,6 +159,7 @@ CREATE TABLE IF NOT EXISTS readings (
   has_gps         INTEGER NOT NULL DEFAULT 0,
   fw_patch        INTEGER,
   gps_age_s       INTEGER,
+  link_id         TEXT,
   PRIMARY KEY (bracket_at, device_imei, tag_id)
 );
 
@@ -227,6 +238,7 @@ export interface ReadingInput {
   hasGps: boolean;
   fwPatch: number | null;
   gpsAgeSeconds: number | null;
+  linkId: string | null;
 }
 
 export interface RoundInput {
@@ -284,6 +296,28 @@ function migrateUserOrgs(db: DatabaseSyncType): void {
   `);
 }
 
+/**
+ * Adds `readings.link_id` to a database created before newer firmware started
+ * reporting it — `CREATE TABLE IF NOT EXISTS` above only shapes a brand-new
+ * table, so an existing one needs its own `ALTER TABLE`, guarded by checking
+ * `PRAGMA table_info` first since SQLite has no `ADD COLUMN IF NOT EXISTS`.
+ */
+function migrateReadingsLinkId(db: DatabaseSyncType): void {
+  const columns = db.prepare('PRAGMA table_info(readings)').all() as Array<{ name: string }>;
+  if (columns.some((c) => c.name === 'link_id')) return;
+  db.exec('ALTER TABLE readings ADD COLUMN link_id TEXT');
+}
+
+/** Same idea as `migrateReadingsLinkId`, for the reader's own radio id and cached position. */
+function migrateDevicesRadioAndGps(db: DatabaseSyncType): void {
+  const columns = db.prepare('PRAGMA table_info(devices)').all() as Array<{ name: string }>;
+  const names = new Set(columns.map((c) => c.name));
+  if (!names.has('radio_id')) db.exec('ALTER TABLE devices ADD COLUMN radio_id TEXT');
+  if (!names.has('gps_lat')) db.exec('ALTER TABLE devices ADD COLUMN gps_lat REAL');
+  if (!names.has('gps_lon')) db.exec('ALTER TABLE devices ADD COLUMN gps_lon REAL');
+  if (!names.has('gps_updated_at')) db.exec('ALTER TABLE devices ADD COLUMN gps_updated_at INTEGER');
+}
+
 function toBool(value: unknown): boolean {
   return Number(value) === 1;
 }
@@ -301,6 +335,8 @@ export class Store {
     this.db.exec(SCHEMA);
     migrateLegacyUserRole(this.db);
     migrateUserOrgs(this.db);
+    migrateReadingsLinkId(this.db);
+    migrateDevicesRadioAndGps(this.db);
     bootstrapFoundingAdmin(this.db, foundingAdminUsername);
   }
 
@@ -609,10 +645,10 @@ export class Store {
 
   // --- Devices -------------------------------------------------------------
 
-  createDevice(imei: string, orgId: string, label: string): void {
+  createDevice(imei: string, orgId: string, label: string, radioId: string | null = null): void {
     this.db
-      .prepare('INSERT INTO devices (imei, org_id, label, created_at) VALUES (?, ?, ?, ?)')
-      .run(imei, orgId, label, Date.now());
+      .prepare('INSERT INTO devices (imei, org_id, label, radio_id, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run(imei, orgId, label, radioId, Date.now());
   }
 
   private static toDeviceRow(row: {
@@ -627,6 +663,10 @@ export class Store {
     poll_offset_minutes: number;
     last_ingest_at: number | null;
     last_ingest_status: string | null;
+    radio_id: string | null;
+    gps_lat: number | null;
+    gps_lon: number | null;
+    gps_updated_at: number | null;
     created_at: number;
   }): DeviceRow {
     return {
@@ -641,6 +681,10 @@ export class Store {
       pollOffsetMinutes: row.poll_offset_minutes,
       lastIngestAt: row.last_ingest_at,
       lastIngestStatus: row.last_ingest_status,
+      radioId: row.radio_id,
+      lat: row.gps_lat,
+      lon: row.gps_lon,
+      gpsUpdatedAt: row.gps_updated_at,
       createdAt: row.created_at,
     };
   }
@@ -648,7 +692,8 @@ export class Store {
   private static readonly DEVICE_SELECT = `
     SELECT d.imei, d.org_id, o.name AS org_name, d.label, d.active,
            d.report_start_minute, d.report_interval_minutes, d.report_count_per_day,
-           d.poll_offset_minutes, d.last_ingest_at, d.last_ingest_status, d.created_at
+           d.poll_offset_minutes, d.last_ingest_at, d.last_ingest_status,
+           d.radio_id, d.gps_lat, d.gps_lon, d.gps_updated_at, d.created_at
     FROM devices d LEFT JOIN organisations o ON o.id = d.org_id`;
 
   listDevices(orgId?: string): DeviceRow[] {
@@ -672,7 +717,14 @@ export class Store {
     patch: Partial<
       Pick<
         DeviceRow,
-        'orgId' | 'label' | 'active' | 'reportStartMinute' | 'reportIntervalMinutes' | 'reportCountPerDay' | 'pollOffsetMinutes'
+        | 'orgId'
+        | 'label'
+        | 'active'
+        | 'reportStartMinute'
+        | 'reportIntervalMinutes'
+        | 'reportCountPerDay'
+        | 'pollOffsetMinutes'
+        | 'radioId'
       >
     >,
   ): void {
@@ -684,14 +736,15 @@ export class Store {
       reportIntervalMinutes: 'report_interval_minutes',
       reportCountPerDay: 'report_count_per_day',
       pollOffsetMinutes: 'poll_offset_minutes',
+      radioId: 'radio_id',
     };
     const sets: string[] = [];
-    const values: Array<string | number> = [];
+    const values: Array<string | number | null> = [];
     for (const [key, column] of Object.entries(columns)) {
       const value = patch[key as keyof typeof patch];
       if (value === undefined) continue;
       sets.push(`${column} = ?`);
-      values.push(typeof value === 'boolean' ? (value ? 1 : 0) : (value as string | number));
+      values.push(typeof value === 'boolean' ? (value ? 1 : 0) : value);
     }
     if (sets.length === 0) return;
     values.push(imei);
@@ -704,6 +757,13 @@ export class Store {
 
   markDeviceIngest(imei: string, at: number, status: string): void {
     this.db.prepare('UPDATE devices SET last_ingest_at = ?, last_ingest_status = ? WHERE imei = ?').run(at, status, imei);
+  }
+
+  /** Caches the reader's own position, read separately off the events API — the discovery logs never carry it. */
+  setDevicePosition(imei: string, lat: number, lon: number, updatedAt: number): void {
+    this.db
+      .prepare('UPDATE devices SET gps_lat = ?, gps_lon = ?, gps_updated_at = ? WHERE imei = ?')
+      .run(lat, lon, updatedAt, imei);
   }
 
   // --- Tag whitelist -------------------------------------------------------
@@ -810,8 +870,8 @@ export class Store {
   writeReadings(readings: ReadingInput[], rounds: RoundInput[]): number {
     const readingStmt = this.db.prepare(
       `INSERT OR REPLACE INTO readings
-       (bracket_at, device_imei, tag_id, battery_mv, rssi, hops, wave_count, movement_state, lat, lon, has_gps, fw_patch, gps_age_s)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (bracket_at, device_imei, tag_id, battery_mv, rssi, hops, wave_count, movement_state, lat, lon, has_gps, fw_patch, gps_age_s, link_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     const roundStmt = this.db.prepare(
       `INSERT OR REPLACE INTO rounds
@@ -836,6 +896,7 @@ export class Store {
           r.hasGps ? 1 : 0,
           r.fwPatch,
           r.gpsAgeSeconds,
+          r.linkId,
         );
       }
       for (const r of rounds) {
@@ -956,7 +1017,7 @@ export class Store {
          ),
          counts AS (SELECT tag_id, COUNT(DISTINCT bracket_at) AS n FROM scoped GROUP BY tag_id)
          SELECT l.tag_id, ot.label, l.bracket_at AS last_seen_at, l.battery_mv, l.rssi, l.hops,
-                l.wave_count, l.movement_state, l.fw_patch, l.device_imei AS source_device_imei,
+                l.wave_count, l.movement_state, l.fw_patch, l.link_id, l.device_imei AS source_device_imei,
                 g.lat, g.lon, g.bracket_at AS fix_at, g.gps_age_s, c.n AS reading_count
            FROM latest l
            LEFT JOIN latest_gps g ON g.tag_id = l.tag_id
@@ -974,6 +1035,7 @@ export class Store {
       wave_count: number | null;
       movement_state: number | null;
       fw_patch: number | null;
+      link_id: string | null;
       source_device_imei: string;
       lat: number | null;
       lon: number | null;
@@ -992,6 +1054,7 @@ export class Store {
       waveCount: r.wave_count,
       movementState: r.movement_state,
       fwVersionPatch: r.fw_patch,
+      linkId: r.link_id,
       sourceDeviceImei: r.source_device_imei,
       lat: r.lat,
       lon: r.lon,

@@ -35,6 +35,30 @@ describe('parseLogText — advanced mode', () => {
     expect(tag?.lat).toBeNull();
     expect(tag?.lon).toBeNull();
   });
+
+  it('has no link id when the column is absent from the header', () => {
+    const tag = blocks[0]?.tags.find((t) => t.id === '441F');
+    expect(tag?.linkId).toBeNull();
+  });
+});
+
+describe('parseLogText — advanced mode with RssiSrc (link) column', () => {
+  const blocks = parseLogText(fixture('advancedModeWithLink'), 'UNIT_A');
+
+  it('reads a real link id off the newer column', () => {
+    const tag = blocks[0]?.tags.find((t) => t.id === '121F');
+    expect(tag?.linkId).toBe('E20');
+  });
+
+  it('treats the firmware\'s own "0" as no link yet', () => {
+    const tag = blocks[0]?.tags.find((t) => t.id === '3E1E');
+    expect(tag?.linkId).toBeNull();
+  });
+
+  it('treats a row missing the trailing value as no link', () => {
+    const tag = blocks[0]?.tags.find((t) => t.id === '2F1F');
+    expect(tag?.linkId).toBeNull();
+  });
 });
 
 describe('parseLogText — basic mode', () => {

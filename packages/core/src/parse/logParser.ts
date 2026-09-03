@@ -5,10 +5,14 @@
  *   *00:00:29(+02:00) Mon 06-Jul-2026 4019mV
  *   ---------------------------------
  *   Tag Discovery (advanced):
- *   DeviceId,Hops,Wave,RSSI,BatMv,Move,Lat,Lon,FwPatch
+ *   DeviceId,Hops,Wave,RSSI,BatMv,Move,Lat,Lon,FwPatch,RssiSrc
  *
- *   3E1E,1,1,-68,3637,1,0,0,22
+ *   3E1E,1,1,-68,3637,1,0,0,22,0
  *   ...
+ *
+ * `RssiSrc` is newer still: the id of the tag this row's data actually
+ * relayed through to reach the reader — "0" (or the column simply being
+ * absent, on older firmware) means there was no link yet.
  *
  *   Total devices discovered: 11
  *   ---------------------------------
@@ -70,6 +74,7 @@ const COLUMN_ALIASES: Record<string, TagField> = {
   lon: 'lon',
   fwpatch: 'fwVersionPatch',
   ages: 'gpsAgeSeconds',
+  rssisrc: 'linkId',
 };
 
 /** Fallback for logs predating the self-describing header line. */
@@ -150,6 +155,13 @@ function parseTagRow(rowParts: string[], columnMap: ColumnMap): TagReading | nul
   const lon = lonRaw !== undefined ? parseInt(lonRaw, 10) : NaN;
   const hasGps = !Number.isNaN(lat) && !Number.isNaN(lon) && !(lat === 0 && lon === 0);
 
+  // "0" is the firmware's own "no link yet" value, same idea as (0,0) meaning
+  // no fix for lat/lon above — not a real tag id, so it's normalized to null
+  // right alongside the column being absent entirely.
+  const linkRaw = field('linkId');
+  const linkCleaned = linkRaw === undefined ? '' : sanitizeTagId(linkRaw).toUpperCase();
+  const linkId = linkCleaned === '' || linkCleaned === '0' ? null : linkCleaned;
+
   return {
     id,
     hops: toIntOrNull('hops'),
@@ -163,6 +175,7 @@ function parseTagRow(rowParts: string[], columnMap: ColumnMap): TagReading | nul
     hasGps,
     fwVersionPatch: toIntOrNull('fwVersionPatch'),
     gpsAgeSeconds: toIntOrNull('gpsAgeSeconds'),
+    linkId,
   };
 }
 

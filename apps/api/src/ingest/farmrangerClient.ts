@@ -69,6 +69,53 @@ export async function fetchDeviceSchedule(config: Config, imei: string): Promise
   return readSchedule((await res.json()) as unknown);
 }
 
+/** The reader itself, unlike every tag it hears, never reports its own position
+ *  in the discovery logs — this is read off its most recent event instead. */
+export interface DevicePosition {
+  lat: number;
+  lon: number;
+  /** Epoch ms the reader itself reported this fix at. */
+  reportedAt: number;
+}
+
+/**
+ * Same host and version as the settings API (and the same bearer token), just
+ * a different collection — the newest event on file, which is what carries
+ * this reader's own GPS fix.
+ */
+export function buildEventsUrl(config: Config, imei: string): string {
+  return `${config.settingsApiBase}${imei}/events?Deleted=false&PageNumber=1&PageSize=1&Sort=timestamp&Order=desc`;
+}
+
+/** Pulls `items[0]` out of the same `{ items: [...] }` paging envelope the settings API uses. */
+function readLatestEvent(payload: unknown): Record<string, unknown> | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const items = (payload as { items?: unknown }).items;
+  const event = Array.isArray(items) ? (items[0] as Record<string, unknown> | undefined) : undefined;
+  return event ?? null;
+}
+
+export async function fetchDevicePosition(config: Config, imei: string): Promise<DevicePosition | null> {
+  if (!config.settingsApiBase || !config.settingsApiToken) return null;
+
+  const res = await fetch(buildEventsUrl(config, imei), {
+    headers: { authorization: `Bearer ${config.settingsApiToken}` },
+  });
+  if (!res.ok) {
+    throw new Error(`Events API returned HTTP ${res.status} for ${imei}.`);
+  }
+  const event = readLatestEvent((await res.json()) as unknown);
+  if (!event) return null;
+
+  const lat = Number(event['gpsLatitude']);
+  const lon = Number(event['gpsLongitude']);
+  const timestamp = typeof event['timestamp'] === 'string' ? Date.parse(event['timestamp']) : NaN;
+  // (0, 0) is the same "no fix yet" sentinel the discovery logs use.
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || (lat === 0 && lon === 0)) return null;
+
+  return { lat, lon, reportedAt: Number.isFinite(timestamp) ? timestamp : Date.now() };
+}
+
 /** `HH:MM:SS` (or `HH:MM`) to whole minutes. Null for anything else. */
 function parseClock(value: unknown): number | null {
   if (typeof value !== 'string') return null;

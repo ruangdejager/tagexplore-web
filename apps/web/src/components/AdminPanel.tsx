@@ -440,6 +440,7 @@ function DevicesTab({ orgs, run }: { orgs: OrganisationRow[]; run: Run }): JSX.E
   const [nonce, setNonce] = useState(0);
   const [imei, setImei] = useState('');
   const [label, setLabel] = useState('');
+  const [radioId, setRadioId] = useState('');
   const [orgId, setOrgId] = useState('');
   const [busyImei, setBusyImei] = useState<string | null>(null);
 
@@ -456,11 +457,14 @@ function DevicesTab({ orgs, run }: { orgs: OrganisationRow[]; run: Run }): JSX.E
         onSubmit={(e) => {
           e.preventDefault();
           if (!imei.trim() || !orgId) return;
-          void run(() => api.createDevice(imei.trim(), orgId, label.trim()), `Added ${imei.trim()}.`).then(() => {
-            setImei('');
-            setLabel('');
-            reload();
-          });
+          void run(() => api.createDevice(imei.trim(), orgId, label.trim(), radioId.trim()), `Added ${imei.trim()}.`).then(
+            () => {
+              setImei('');
+              setLabel('');
+              setRadioId('');
+              reload();
+            },
+          );
         }}
       >
         <label>
@@ -470,6 +474,15 @@ function DevicesTab({ orgs, run }: { orgs: OrganisationRow[]; run: Run }): JSX.E
         <label>
           Label
           <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="North reader" />
+        </label>
+        <label>
+          Radio ID
+          <input
+            value={radioId}
+            onChange={(e) => setRadioId(e.target.value)}
+            placeholder="E20"
+            title="This reader's own id, as it appears in a tag's RssiSrc column when the tag reached it directly"
+          />
         </label>
         <label>
           Organisation
@@ -492,6 +505,7 @@ function DevicesTab({ orgs, run }: { orgs: OrganisationRow[]; run: Run }): JSX.E
           <tr>
             <th>IMEI</th>
             <th>Label</th>
+            <th>Radio ID</th>
             <th>Organisation</th>
             <th>First report</th>
             <th>Every</th>
@@ -514,6 +528,19 @@ function DevicesTab({ orgs, run }: { orgs: OrganisationRow[]; run: Run }): JSX.E
                   onBlur={(e) => {
                     const next = e.target.value.trim();
                     if (next !== device.label) void run(() => api.updateDevice(device.imei, { label: next })).then(reload);
+                  }}
+                />
+              </td>
+              <td className="mono">
+                <input
+                  defaultValue={device.radioId ?? ''}
+                  placeholder="none"
+                  title="This reader's own id, as it appears in a tag's RssiSrc column when the tag reached it directly"
+                  onBlur={(e) => {
+                    const next = e.target.value.trim().toUpperCase();
+                    if (next !== (device.radioId ?? '')) {
+                      void run(() => api.updateDevice(device.imei, { radioId: next })).then(reload);
+                    }
                   }}
                 />
               </td>

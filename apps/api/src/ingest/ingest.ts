@@ -1,7 +1,7 @@
 import { mergeSessions, parseLogText, type DiscoveryBlock, type DiscoverySession } from '@tagexplore/core';
 import type { Config } from '../config.js';
 import type { ReadingInput, RoundInput, Store } from '../db/index.js';
-import { fetchUnitLogText } from './farmrangerClient.js';
+import { fetchDevicePosition, fetchUnitLogText } from './farmrangerClient.js';
 
 export interface IngestResult {
   imei: string;
@@ -98,6 +98,7 @@ function storeBlocks(store: Store, config: Config, imei: string, blocks: Discove
         hasGps: tag.hasGps,
         fwPatch: tag.fwVersionPatch,
         gpsAgeSeconds: tag.gpsAgeSeconds,
+        linkId: tag.linkId,
       });
     }
   }
@@ -136,6 +137,17 @@ export async function ingestDevice(store: Store, config: Config, imei: string, n
 
     store.finishIngestRun(runId, 'ok', { blocksParsed, readingsWritten });
     store.markDeviceIngest(imei, Date.now(), 'ok');
+
+    // The reader's own position isn't in the logs at all, so it's read off a
+    // separate API — best-effort: a failure here (no token configured, the
+    // events API down) shouldn't fail an otherwise-successful log ingest.
+    try {
+      const position = await fetchDevicePosition(config, imei);
+      if (position) store.setDevicePosition(imei, position.lat, position.lon, position.reportedAt);
+    } catch {
+      // Ignored — see above.
+    }
+
     return { imei, blocksParsed, readingsWritten, from: start, to: now };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

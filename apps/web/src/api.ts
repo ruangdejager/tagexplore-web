@@ -162,15 +162,26 @@ export const deleteUser = (id: string): Promise<{ ok: true }> =>
 
 export const fetchAdminDevices = (): Promise<{ devices: DeviceRow[] }> => request('/api/admin/devices');
 
-export const createDevice = (imei: string, orgId: string, label: string): Promise<{ device: DeviceRow }> =>
-  request('/api/admin/devices', { method: 'POST', ...json({ imei, orgId, label }) });
+export const createDevice = (
+  imei: string,
+  orgId: string,
+  label: string,
+  radioId: string,
+): Promise<{ device: DeviceRow }> => request('/api/admin/devices', { method: 'POST', ...json({ imei, orgId, label, radioId }) });
 
 export const updateDevice = (
   imei: string,
   patch: Partial<
     Pick<
       DeviceRow,
-      'label' | 'active' | 'orgId' | 'reportStartMinute' | 'reportIntervalMinutes' | 'reportCountPerDay' | 'pollOffsetMinutes'
+      | 'label'
+      | 'active'
+      | 'orgId'
+      | 'reportStartMinute'
+      | 'reportIntervalMinutes'
+      | 'reportCountPerDay'
+      | 'pollOffsetMinutes'
+      | 'radioId'
     >
   >,
 ): Promise<{ device: DeviceRow }> => request(`/api/admin/devices/${imei}`, { method: 'PATCH', ...json(patch) });
