@@ -296,10 +296,18 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   const watchedTagIds = useMemo(() => new Set(toggledSnapshots.map((s) => s.tagId)), [toggledSnapshots]);
 
   // The discovery-state legend colours markers by the same checked-in set the
-  // count panel's fraction counts, for whatever window is currently picked.
+  // count panel's fraction counts, for whatever window is currently picked —
+  // computed off whatever the map is actually showing, live or a past round,
+  // and "now" for a numeric window is that round's own time, not the real
+  // clock, so a tag not yet due to report at that point in time reads as
+  // out-of-range rather than falsely "just seen".
+  const mapToggledSnapshots = useMemo(
+    () => mapSourceSnapshots.filter((s) => !hiddenFromMap.has(s.tagId)),
+    [mapSourceSnapshots, hiddenFromMap],
+  );
   const discoveryIds = useMemo(
-    () => checkedInTagIds(toggledSnapshots, discoveryWindow, now),
-    [toggledSnapshots, discoveryWindow, now],
+    () => checkedInTagIds(mapToggledSnapshots, discoveryWindow, historyAt ?? now),
+    [mapToggledSnapshots, discoveryWindow, historyAt, now],
   );
   // What "Recentre" frames to on either map: every org tag's own position,
   // regardless of the list's toggles or search — unlike the global map's
@@ -310,7 +318,6 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   );
 
   const selected = visible.find((t) => t.tagId === selectedTagId) ?? null;
-  const withFix = visible.filter((t) => t.lat !== null).length;
 
   const toggleMapVisibility = useCallback((tagId: string): void => {
     setHiddenFromMap((prev) => {
@@ -371,7 +378,7 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
         </button>
 
         <div className="tally">
-          <b>{visible.length}</b> tags shown · <b>{withFix}</b> with a fix · <b>{devices.length}</b> devices
+          <b>{whitelist.length}</b> Tags · <b>{devices.length}</b> devices
           {loading && ' · loading…'}
           {error && <span className="status-error"> · {error}</span>}
         </div>
@@ -509,6 +516,7 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
         geofencesView={geofencesView}
         colorMode={colorMode}
         discoveryIds={discoveryIds}
+        historyAt={historyAt}
         orgId={orgId}
         movementSnapshots={toggledSnapshots}
         orgPoints={orgPoints}

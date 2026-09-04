@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { checkedInTagIds, DISCOVERY_WINDOWS, type DiscoveryCountPoint, type DiscoveryWindow, type TagSnapshot } from '@tagexplore/core';
 import * as api from '../api.js';
 
@@ -65,20 +65,39 @@ export function CountPanel({
     setShowHistory((v) => !v);
   };
 
+  // Once loaded, keeps itself in sync with every live poll instead of going
+  // stale until the page is refreshed — `snapshots` changes identity exactly
+  // when the parent's own snapshot fetch (poll or manual Refresh) lands.
+  useEffect(() => {
+    if (history === null) return;
+    api
+      .fetchDiscoveryCounts(orgId)
+      .then((res) => setHistory(res.counts))
+      .catch(() => {});
+  }, [snapshots, orgId]);
+
   const isLive = historyAt === null;
+  const latestAt = snapshots.length > 0 ? Math.max(...snapshots.map((s) => s.lastSeenAt)) : null;
 
   return (
     <div className="card count-panel">
-      <button
-        type="button"
-        className="live-badge"
-        data-live={isLive ? '1' : '0'}
-        onClick={onGoLive}
-        title={isLive ? 'Showing the latest snapshot' : 'Jump back to the latest snapshot'}
-      >
-        <span className="live-dot" aria-hidden="true" />
-        LIVE
-      </button>
+      <div className="live-status">
+        {latestAt !== null && (
+          <span className="live-at" title="Time of the latest discovery round">
+            {timestamp(latestAt)}
+          </span>
+        )}
+        <button
+          type="button"
+          className="live-badge"
+          data-live={isLive ? '1' : '0'}
+          onClick={onGoLive}
+          title={isLive ? 'Showing the latest snapshot' : 'Jump back to the latest snapshot'}
+        >
+          <span className="live-dot" aria-hidden="true" />
+          LIVE
+        </button>
+      </div>
       <h3>
         {count}/{snapshots.length}
       </h3>

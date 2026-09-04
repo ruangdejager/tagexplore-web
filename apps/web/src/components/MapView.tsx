@@ -41,6 +41,13 @@ interface Props {
   colorMode: MarkerColorMode;
   /** Tags counted as "checked in" under the count panel's current window — only read in 'discovery' mode. */
   discoveryIds: Set<string>;
+  /** The past discovery round currently shown, or `null` for live — the
+   *  reference point 'age' mode ages a fix against, so browsing history
+   *  colours a tag by how stale its fix was *then*, not against the real
+   *  clock. 'latestGps' and 'discovery' need no such reference: they're
+   *  read straight off `snapshots`/`discoveryIds`, already scoped to the
+   *  round being shown. */
+  historyAt: number | null;
   /** Dotted lines from each tag in the latest discovery to the tag — or the
    *  reader itself — its data actually relayed through. Off by default, and
    *  mutually exclusive with the heatmap (which has no per-tag positions to
@@ -171,6 +178,7 @@ export function MapView({
   heatPoints,
   colorMode,
   discoveryIds,
+  historyAt,
   linkView,
   devices,
   orgId,
@@ -381,7 +389,10 @@ export function MapView({
 
     group.clearLayers();
     byTag.current.clear();
-    const now = Date.now();
+    // Browsing a past round ages every fix against that round's own time
+    // instead of the real clock, so a tag's colour reflects how stale it
+    // actually was back then.
+    const now = historyAt ?? Date.now();
 
     for (const tag of snapshots) {
       if (tag.lat === null || tag.lon === null) continue;
@@ -413,7 +424,7 @@ export function MapView({
       marker.addTo(group);
       byTag.current.set(tag.tagId, marker);
     }
-  }, [snapshots, onSelect, colorMode, discoveryIds]);
+  }, [snapshots, onSelect, colorMode, discoveryIds, historyAt]);
 
   // Markers vs. a density cloud of every raw fix, only in global mode — never
   // both at once, and never while the movement map is showing instead. The

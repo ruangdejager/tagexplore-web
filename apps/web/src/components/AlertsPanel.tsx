@@ -32,12 +32,13 @@ export function AlertsPanel({ watchedTagIds, snapshots, tags, now, onSelectTag }
     for (const tagId of watchedTagIds) {
       const snap = snapshots.find((s) => s.tagId === tagId);
       if (!snap) continue;
-      if (snap.lastSeenAt < staleCutoff) {
-        rows.push({ key: `${tagId}-stale`, tagId, message: `not seen in ${formatAge(now - snap.lastSeenAt)}` });
-      }
-      // movementState: 1 = still, 0 = moving.
+      // movementState: 1 = still, 0 = moving. A tag reporting still wins over
+      // a stale one — "still" already explains why it hasn't moved, so "not
+      // seen in Xh" would just be a second, redundant alarm for the same tag.
       if (snap.movementState === 1) {
         rows.push({ key: `${tagId}-still`, tagId, message: 'still' });
+      } else if (snap.lastSeenAt < staleCutoff) {
+        rows.push({ key: `${tagId}-stale`, tagId, message: `not seen in ${formatAge(now - snap.lastSeenAt)}` });
       }
     }
     return rows;
