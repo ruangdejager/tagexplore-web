@@ -400,7 +400,7 @@ aside {
 .row-visibility {
   width: 14px;
   height: 14px;
-  border: 1px solid var(--ink);
+  border: 2px solid var(--ink);
   border-radius: 2px;
   flex: none;
   padding: 0;

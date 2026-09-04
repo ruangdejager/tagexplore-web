@@ -424,16 +424,19 @@ export function MapView({
       });
       marker.on('click', () => {
         // A measurement in progress takes priority over selecting the tag —
-        // the click still bubbles up to the map's own handler, which finishes
-        // the measurement on top of this marker's position.
-        if (measuringIdRef.current) return;
+        // finished right on the marker's own position rather than wherever
+        // the click happened to land inside its radius.
+        if (measuringIdRef.current) {
+          finishMeasurement(marker.getLatLng());
+          return;
+        }
         onSelect(tag.tagId);
       });
       marker.bindTooltip(tag.label ? `${tag.tagId} · ${tag.label}` : tag.tagId, { direction: 'top', offset: [0, -6] });
       marker.addTo(group);
       byTag.current.set(tag.tagId, marker);
     }
-  }, [snapshots, onSelect, colorMode, historyAt]);
+  }, [snapshots, onSelect, colorMode, historyAt, finishMeasurement]);
 
   // Markers vs. a density cloud of every raw fix, only in global mode — never
   // both at once, and never while the movement map is showing instead. The
@@ -612,13 +615,17 @@ export function MapView({
         offset: [0, -10],
       });
       marker.on('click', () => {
-        // Same as a tag marker: a measurement in progress wins over selecting.
-        if (measuringIdRef.current) return;
+        // Same as a tag marker: a measurement in progress wins over
+        // selecting, and ends right on the reader's own position.
+        if (measuringIdRef.current) {
+          finishMeasurement(marker.getLatLng());
+          return;
+        }
         onSelectDevice(device.imei);
       });
       marker.addTo(group);
     }
-  }, [devices, onSelectDevice]);
+  }, [devices, onSelectDevice, finishMeasurement]);
 
   // Geofence boundaries — available in either view, toggled independently of
   // everything else, and never touches pan or zoom: only the attach/detach

@@ -596,7 +596,7 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
             now={now}
             onSelectTag={selectTag}
           />
-          {selectedDevice && <DeviceCard device={selectedDevice} onClose={() => setSelectedDeviceImei(null)} />}
+          {selectedDevice && <DeviceCard device={selectedDevice} now={now} onClose={() => setSelectedDeviceImei(null)} />}
           {selected && (
             <TagCard
               tag={selected}
