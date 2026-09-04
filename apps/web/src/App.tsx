@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  checkedInTagIds,
   type DiscoveryWindow,
   type GeofenceRegion,
   type OrgTagRow,
@@ -301,19 +300,13 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
     [toggledSnapshots],
   );
 
-  // The discovery-state legend colours markers by the same checked-in set the
-  // count panel's fraction counts, for whatever window is currently picked —
-  // computed off whatever the map is actually showing, live or a past round,
-  // and "now" for a numeric window is that round's own time, not the real
-  // clock, so a tag not yet due to report at that point in time reads as
-  // out-of-range rather than falsely "just seen".
+  // What the count panel's own fraction counts against — whatever the map is
+  // actually showing, live or a past round; the discovery-state legend no
+  // longer shares this with the fraction (it colours strictly by the round
+  // being shown, not by the fraction's own selectable window — see MapView).
   const mapToggledSnapshots = useMemo(
     () => mapSourceSnapshots.filter((s) => !hiddenFromMap.has(s.tagId)),
     [mapSourceSnapshots, hiddenFromMap],
-  );
-  const discoveryIds = useMemo(
-    () => checkedInTagIds(mapToggledSnapshots, discoveryWindow, historyAt ?? now),
-    [mapToggledSnapshots, discoveryWindow, historyAt, now],
   );
   // What "Recentre" frames to on either map: every org tag's own position,
   // regardless of the list's toggles or search — unlike the global map's
@@ -521,7 +514,6 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
         geofences={geofences}
         geofencesView={geofencesView}
         colorMode={colorMode}
-        discoveryIds={discoveryIds}
         historyAt={historyAt}
         orgId={orgId}
         movementSnapshots={toggledSnapshots}
