@@ -1041,23 +1041,39 @@ export class Store {
    * unlike `rounds.tag_count` which is per-device. The most recent row is
    * "the latest discovery"; the rest is what the count-history list scrolls
    * through.
+   *
+   * `durationSeconds` is the slowest device's own `rounds.duration_seconds`
+   * for that bracket — how long after the bracket boundary (discovery is
+   * assumed to start exactly on it) the round's last successful block
+   * landed. Null when no round row exists for the bracket at all (older
+   * data, or a device excluded by `excludeDeviceImeis`).
    */
   listDiscoveryCounts(orgId: string, limit = 200, excludeDeviceImeis?: string[]): DiscoveryCountPoint[] {
-    const filter = excludeDeviceFilterClause(excludeDeviceImeis, 'r');
+    const filterReadings = excludeDeviceFilterClause(excludeDeviceImeis, 'r');
+    const filterRounds = excludeDeviceFilterClause(excludeDeviceImeis, 'ro');
     const rows = this.db
       .prepare(
-        `SELECT r.bracket_at AS bracket_at, COUNT(DISTINCT r.tag_id) AS count
+        `SELECT r.bracket_at AS bracket_at, COUNT(DISTINCT r.tag_id) AS count,
+                (SELECT MAX(ro.duration_seconds) FROM rounds ro
+                   JOIN devices d2 ON d2.imei = ro.device_imei
+                  WHERE d2.org_id = :org AND ro.bracket_at = r.bracket_at
+                    ${filterRounds.sql}
+                ) AS duration_seconds
            FROM readings r
            JOIN devices d ON d.imei = r.device_imei
           WHERE d.org_id = :org
             AND EXISTS (SELECT 1 FROM org_tags t WHERE t.org_id = d.org_id AND t.tag_id = r.tag_id)
-            ${filter.sql}
+            ${filterReadings.sql}
           GROUP BY r.bracket_at
           ORDER BY r.bracket_at DESC
           LIMIT :limit`,
       )
-      .all({ org: orgId, limit, ...filter.params }) as Array<{ bracket_at: number; count: number }>;
-    return rows.map((r) => ({ bracketAt: r.bracket_at, count: r.count }));
+      .all({ org: orgId, limit, ...filterReadings.params, ...filterRounds.params }) as Array<{
+      bracket_at: number;
+      count: number;
+      duration_seconds: number | null;
+    }>;
+    return rows.map((r) => ({ bracketAt: r.bracket_at, count: r.count, durationSeconds: r.duration_seconds }));
   }
 
   /** The most recent bracket this device has any reading for, or null if it has never reported. */

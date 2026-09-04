@@ -38,6 +38,16 @@ function timestamp(ms: number): string {
   return new Date(ms).toLocaleString('en-ZA', { timeZone: 'Africa/Johannesburg', hour12: false });
 }
 
+/** A round is assumed to start exactly on its bracket, so this is just how
+ *  long after that the slowest device's block landed — e.g. `1m26s`, or
+ *  `59s` under a minute. */
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}m${String(s).padStart(2, '0')}s`;
+}
+
 /**
  * Every whitelisted tag already loads with its own latest reading regardless
  * of the window picked here, so "how many unique tags" is just counting that
@@ -142,6 +152,9 @@ export function CountPanel({
                 title="Show this round's snapshot on the map"
               >
                 <span>{timestamp(h.bracketAt)}</span>
+                <span className="count-history-duration">
+                  {h.durationSeconds !== null ? formatDuration(h.durationSeconds) : '—'}
+                </span>
                 <span>{h.count}</span>
               </button>
             ))

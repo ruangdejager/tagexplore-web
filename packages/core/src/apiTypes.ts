@@ -135,6 +135,10 @@ export interface GeofenceRegion {
 export interface DiscoveryCountPoint {
   bracketAt: number;
   count: number;
+  /** How long after `bracketAt` the round's slowest device finished — the
+   *  round is assumed to start exactly on the bracket. Null when no round
+   *  timing is on record for it. */
+  durationSeconds: number | null;
 }
 
 /** Latest known state of one tag — one row in the sidebar, one pin on the map. */

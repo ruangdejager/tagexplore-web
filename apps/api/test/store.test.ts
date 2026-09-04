@@ -356,9 +356,43 @@ describe('listDiscoveryCounts', () => {
 
     const counts = store.listDiscoveryCounts(ORG);
     expect(counts).toEqual([
-      { bracketAt: T0, count: 2 },
-      { bracketAt: T0 - HOUR, count: 1 },
+      { bracketAt: T0, count: 2, durationSeconds: null },
+      { bracketAt: T0 - HOUR, count: 1, durationSeconds: null },
     ]);
+  });
+
+  it('reports the slowest device’s round duration for the bracket, from rounds not readings', () => {
+    store.addOrgTags(ORG, ['3E1E']);
+    store.writeReadings(
+      [
+        reading({ bracketAt: T0, tagId: '3E1E', deviceImei: DEVICE }),
+        reading({ bracketAt: T0, tagId: '3E1E', deviceImei: SECOND_DEVICE }),
+      ],
+      [
+        // 14:16:26 landing for a 14:15:00 bracket — 1m26s.
+        { bracketAt: T0, deviceImei: DEVICE, tagCount: 1, durationSeconds: 86, unitBatteryMv: null, readerFw: null, timedOut: false },
+        // The other device was faster — only the slowest is reported.
+        { bracketAt: T0, deviceImei: SECOND_DEVICE, tagCount: 1, durationSeconds: 12, unitBatteryMv: null, readerFw: null, timedOut: false },
+      ],
+    );
+
+    expect(store.listDiscoveryCounts(ORG)).toEqual([{ bracketAt: T0, count: 1, durationSeconds: 86 }]);
+  });
+
+  it('drops an excluded device’s round from the duration the same way it drops its readings', () => {
+    store.addOrgTags(ORG, ['3E1E']);
+    store.writeReadings(
+      [
+        reading({ bracketAt: T0, tagId: '3E1E', deviceImei: DEVICE }),
+        reading({ bracketAt: T0, tagId: '3E1E', deviceImei: SECOND_DEVICE }),
+      ],
+      [
+        { bracketAt: T0, deviceImei: DEVICE, tagCount: 1, durationSeconds: 86, unitBatteryMv: null, readerFw: null, timedOut: false },
+        { bracketAt: T0, deviceImei: SECOND_DEVICE, tagCount: 1, durationSeconds: 12, unitBatteryMv: null, readerFw: null, timedOut: false },
+      ],
+    );
+
+    expect(store.listDiscoveryCounts(ORG, 200, [DEVICE])).toEqual([{ bracketAt: T0, count: 1, durationSeconds: 12 }]);
   });
 
   it('ignores tags not on the whitelist and rounds from another organisation', () => {
@@ -373,7 +407,7 @@ describe('listDiscoveryCounts', () => {
       [],
     );
 
-    expect(store.listDiscoveryCounts(ORG)).toEqual([{ bracketAt: T0, count: 1 }]);
+    expect(store.listDiscoveryCounts(ORG)).toEqual([{ bracketAt: T0, count: 1, durationSeconds: null }]);
   });
 
   it('respects the limit, newest first', () => {
