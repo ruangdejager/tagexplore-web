@@ -137,3 +137,59 @@ Same shape as the other services: build, attach a volume, point `DATA_DIR` at
 it, and set `PUBLIC_BASE_URL` to the real https URL so the session cookie is
 issued as Secure. `npm start` runs the built API, which serves the built web app
 from the same origin — no separate static host, and no CORS.
+
+### Railway
+
+`railway.json` at the repo root already points Railway at `npm run build` /
+`npm start` and `/api/health` for its healthcheck; `.nvmrc` pins the Node
+version `node:sqlite` needs without `--experimental-sqlite`. What's still a
+manual, per-project step:
+
+1. **Create the service** from this repo (Railway auto-detects Node via
+   Nixpacks; `railway.json` covers build/start/healthcheck).
+2. **Attach a volume** to the service, mounted at e.g. `/data`. Without this
+   the database lives on the container's own disk and is wiped on every
+   redeploy.
+3. **Set environment variables** (see `.env.example` for the full list —
+   nothing in it is committed, all of it has to be set in Railway):
+   - `DATA_DIR=/data` — wherever the volume is mounted.
+   - `PUBLIC_BASE_URL=https://<the-railway-domain>` — required for the
+     session cookie to be issued `Secure`; login silently does nothing over
+     HTTP without it.
+   - `FOUNDING_ADMIN_USERNAME` / `FOUNDING_ADMIN_PASSWORD` — the always-admin
+     account created on first boot of a fresh database.
+   - `SETTINGS_API_TOKEN` if device schedules should self-refresh from the
+     Farmranger settings API; the logs API needs no key.
+4. **Deploy**, then confirm `/api/health` returns `{"ok":true}` and login
+   works with the founding admin.
+
+### Carrying over the existing local database
+
+A fresh volume starts with an empty database — the local one (wherever
+`DATA_DIR` in `.env` points, gitignored, never pushed) has to be copied onto
+the volume by hand once the service exists. Confirm the path first — see the
+note on `DATA_DIR` above; a relative value can leave the real file somewhere
+other than the plain `./data` it looks like at a glance.
+
+1. Checkpoint the WAL into the main file first, so there is one clean file to
+   copy rather than three (`tagexplore.db` / `-wal` / `-shm`). No `sqlite3`
+   CLI needed — `node:sqlite` is already what the app itself uses:
+   ```
+   node -e "const {DatabaseSync}=require('node:sqlite'); const db=new DatabaseSync(process.env.DB_PATH); db.exec('PRAGMA wal_checkpoint(TRUNCATE);'); db.close();" DB_PATH=<path-to-tagexplore.db>
+   ```
+   (set `DB_PATH` however your shell does env vars for one command, e.g.
+   `DB_PATH=... node -e ...` in bash, `$env:DB_PATH=...` then run it in
+   PowerShell).
+2. Copy it onto the volume. `railway ssh` opens a shell in the running
+   container with the volume mounted; piping the file through it avoids
+   needing any extra tooling in the image:
+   ```
+   railway ssh --service <service-name> -- "cat > /data/tagexplore.db" < <path-to-tagexplore.db>
+   ```
+   (`railway link` first if the CLI isn't already pointed at this project.)
+3. Restart the service so it opens the copied file instead of whatever it
+   created on first boot.
+
+Do this before real traffic hits the new deploy — copying over a database
+the live service already has open is asking for a corrupt file, not a
+restore.

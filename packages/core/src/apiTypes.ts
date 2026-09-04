@@ -66,6 +66,8 @@ export interface DeviceRow {
   lat: number | null;
   lon: number | null;
   gpsUpdatedAt: number | null;
+  /** This reader's own firmware version, off its most recent round — null until it has reported one. */
+  readerFw: string | null;
   createdAt: number;
 }
 
@@ -199,4 +201,8 @@ export interface UserPreferences {
   /** Whether geofence boundaries are drawn on the map — off by default, unlike
    *  the heatmap and link-view toggles, this one is remembered. */
   geofencesView: boolean;
+  /** Devices switched off in the main list — every reading that came in
+   *  through one of these is excluded everywhere: the map, the tag list,
+   *  the count fraction, and the count history. */
+  hiddenDeviceImeis: string[];
 }

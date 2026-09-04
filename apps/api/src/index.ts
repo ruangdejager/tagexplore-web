@@ -34,6 +34,11 @@ app.use('*', compress());
 // the cookie and login would appear to do nothing.
 const cookieSecure = config.publicBaseUrl.startsWith('https://');
 
+// Unauthenticated on purpose — this is what a platform healthcheck (Railway's
+// included) polls before routing traffic to a deploy, and it should never be
+// blocked on a session cookie the checker doesn't have.
+app.get('/api/health', (c) => c.json({ ok: true }));
+
 app.route('/api/auth', createAuthApi({ store, cookieSecure }));
 app.route('/api/account', createAccountApi({ store }));
 app.route('/api/admin', createAdminApi({ store, config }));

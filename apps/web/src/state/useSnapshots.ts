@@ -27,7 +27,12 @@ export interface SnapshotState {
   refresh: () => void;
 }
 
-export function useSnapshots(orgId: string | null, hours: number, enabled: boolean): SnapshotState {
+export function useSnapshots(
+  orgId: string | null,
+  hours: number,
+  enabled: boolean,
+  excludeDeviceImeis?: string[],
+): SnapshotState {
   const [snapshots, setSnapshots] = useState<TagSnapshot[]>([]);
   const [devices, setDevices] = useState<DeviceRow[]>([]);
   const [range, setRange] = useState({ from: 0, to: 0 });
@@ -41,6 +46,12 @@ export function useSnapshots(orgId: string | null, hours: number, enabled: boole
 
   const refresh = useCallback(() => setNonce((n) => n + 1), []);
 
+  // Joined to a string for the dependency array: `excludeDeviceImeis` is a new
+  // array reference on every render even when its contents haven't changed,
+  // and re-fetching on every render (rather than only when the actual toggle
+  // set changes) would defeat the point of this hook's own polling cadence.
+  const excludeDeviceImeisKey = excludeDeviceImeis?.join(',') ?? '';
+
   useEffect(() => {
     if (!enabled) {
       setSnapshots([]);
@@ -50,7 +61,7 @@ export function useSnapshots(orgId: string | null, hours: number, enabled: boole
 
     let cancelled = false;
     setLoading(true);
-    Promise.all([api.fetchSnapshots(orgId, hours), api.fetchDevices(orgId)])
+    Promise.all([api.fetchSnapshots(orgId, hours, excludeDeviceImeis), api.fetchDevices(orgId)])
       .then(([snapshotRes, deviceRes]) => {
         if (cancelled) return;
         setSnapshots(snapshotRes.snapshots);
@@ -71,7 +82,7 @@ export function useSnapshots(orgId: string | null, hours: number, enabled: boole
     return () => {
       cancelled = true;
     };
-  }, [orgId, hours, enabled, nonce]);
+  }, [orgId, hours, enabled, nonce, excludeDeviceImeisKey]);
 
   useEffect(() => {
     if (!enabled) return;

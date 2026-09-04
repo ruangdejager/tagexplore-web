@@ -11,6 +11,8 @@ import { AdminPanel } from './components/AdminPanel.js';
 import { AlertsPanel } from './components/AlertsPanel.js';
 import { BatteryTrends } from './components/BatteryTrends.js';
 import { CountPanel } from './components/CountPanel.js';
+import { DeviceCard } from './components/DeviceCard.js';
+import { DeviceList } from './components/DeviceList.js';
 import { LoginScreen } from './components/LoginScreen.js';
 import { MapLegend } from './components/MapLegend.js';
 import { MapView, type MarkerColorMode } from './components/MapView.js';
@@ -74,6 +76,11 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   const [viewOrgId, setViewOrgId] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [hiddenFromMap, setHiddenFromMap] = useState<Set<string>>(new Set());
+  // Devices switched off in the main list — excluded from every reading
+  // everywhere (map, tag list, counts, history), not just hidden from the
+  // map the way a tag toggle is. Persisted the same way `hiddenFromMap` is.
+  const [hiddenDeviceImeis, setHiddenDeviceImeis] = useState<Set<string>>(new Set());
+  const [selectedDeviceImei, setSelectedDeviceImei] = useState<string | null>(null);
   const [heatmapView, setHeatmapView] = useState(false);
   const [linkView, setLinkView] = useState(false);
   // Unlike heatmap/link, this one is remembered across sessions — see the
@@ -119,10 +126,23 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   const orgId = viewOrgId ?? availableOrgs[0]?.id ?? null;
   const canSeeData = orgId !== null;
 
+  // Undefined (not an empty array) when nothing is excluded — the server's
+  // own convention for "no filter, every device kept", and cheaper than
+  // sending every device's id back on the common case of none switched off.
+  const excludeDeviceImeis = useMemo(
+    () => (hiddenDeviceImeis.size > 0 ? [...hiddenDeviceImeis] : undefined),
+    [hiddenDeviceImeis],
+  );
+
   // Tags are never time-filtered — every whitelisted tag always shows its
   // latest known state, so the fetch window here is just a generous ceiling,
   // not a user-facing setting. The heatmap gets its own window below.
-  const { snapshots, devices, loading, hasLoaded, error, refresh } = useSnapshots(orgId, SNAPSHOT_WINDOW_HOURS, canSeeData);
+  const { snapshots, devices, loading, hasLoaded, error, refresh } = useSnapshots(
+    orgId,
+    SNAPSHOT_WINDOW_HOURS,
+    canSeeData,
+    excludeDeviceImeis,
+  );
   const heatPoints = useHeatPoints(orgId, heatmapHours, heatmapView);
 
   // "3h ago" has to keep counting without a refetch, so the clock the list and
@@ -147,7 +167,7 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
     }
     let cancelled = false;
     api
-      .fetchSnapshotsAt(orgId, historyAt)
+      .fetchSnapshotsAt(orgId, historyAt, excludeDeviceImeis)
       .then((res) => {
         if (!cancelled) setHistorySnapshots(res.snapshots);
       })
@@ -157,7 +177,7 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
     return () => {
       cancelled = true;
     };
-  }, [historyAt, orgId]);
+  }, [historyAt, orgId, excludeDeviceImeis]);
 
   useEffect(() => {
     if (!isAdmin) {
@@ -207,6 +227,7 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
         setColorMode(res.preferences.colorMode);
         setSavedOrgId(res.preferences.lastOrgId);
         setGeofencesView(res.preferences.geofencesView);
+        setHiddenDeviceImeis(new Set(res.preferences.hiddenDeviceImeis));
       })
       .finally(() => {
         if (!cancelled) setPrefsLoaded(true);
@@ -244,9 +265,15 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   useEffect(() => {
     if (!prefsLoaded) return;
     void api
-      .savePreferences({ hiddenTagIds: [...hiddenFromMap], colorMode, lastOrgId: orgId, geofencesView })
+      .savePreferences({
+        hiddenTagIds: [...hiddenFromMap],
+        colorMode,
+        lastOrgId: orgId,
+        geofencesView,
+        hiddenDeviceImeis: [...hiddenDeviceImeis],
+      })
       .catch(() => {});
-  }, [prefsLoaded, hiddenFromMap, colorMode, orgId, geofencesView]);
+  }, [prefsLoaded, hiddenFromMap, colorMode, orgId, geofencesView, hiddenDeviceImeis]);
 
   // Every tag starts toggled on in the battery trend, once per organisation —
   // not on every whitelist refetch, so a deliberate "None" or a manual toggle
@@ -317,6 +344,7 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   );
 
   const selected = visible.find((t) => t.tagId === selectedTagId) ?? null;
+  const selectedDevice = devices.find((d) => d.imei === selectedDeviceImei) ?? null;
 
   const toggleMapVisibility = useCallback((tagId: string): void => {
     setHiddenFromMap((prev) => {
@@ -325,6 +353,26 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
       else next.add(tagId);
       return next;
     });
+  }, []);
+
+  const toggleDevice = useCallback((imei: string): void => {
+    setHiddenDeviceImeis((prev) => {
+      const next = new Set(prev);
+      if (next.has(imei)) next.delete(imei);
+      else next.add(imei);
+      return next;
+    });
+  }, []);
+
+  // A tag and a device card never show at once — selecting one clears the other.
+  const selectTag = useCallback((tagId: string | null): void => {
+    setSelectedTagId(tagId);
+    setSelectedDeviceImei(null);
+  }, []);
+
+  const selectDevice = useCallback((imei: string): void => {
+    setSelectedDeviceImei(imei);
+    setSelectedTagId(null);
   }, []);
 
   const selectHistory = useCallback((bracketAt: number): void => {
@@ -390,6 +438,7 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
               onChange={(e) => {
                 setViewOrgId(e.target.value || null);
                 setSelectedTagId(null);
+                setSelectedDeviceImei(null);
                 setTrendTags(new Set());
               }}
               title={isAdmin ? 'Look at another organisation' : 'Switch organisation'}
@@ -489,10 +538,17 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
           </div>
 
           {!canSeeData && !isAdmin && <OrgRequestPanel />}
+          <DeviceList
+            devices={devices}
+            selectedDeviceImei={selectedDeviceImei}
+            onSelect={selectDevice}
+            hiddenDeviceImeis={hiddenDeviceImeis}
+            onToggle={toggleDevice}
+          />
           <TagList
             snapshots={visible}
             selectedTagId={selectedTagId}
-            onSelect={setSelectedTagId}
+            onSelect={selectTag}
             now={now}
             hiddenFromMap={hiddenFromMap}
             onToggleMapVisibility={toggleMapVisibility}
@@ -504,13 +560,14 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
         mode={mainView}
         snapshots={mapTags}
         selectedTagId={selectedTagId}
-        onSelect={setSelectedTagId}
+        onSelect={selectTag}
         fitNonce={fitNonce}
         autoFitKey={orgId}
         heatmapView={heatmapView}
         heatPoints={heatPoints}
         linkView={linkView}
         devices={devices}
+        onSelectDevice={selectDevice}
         geofences={geofences}
         geofencesView={geofencesView}
         colorMode={colorMode}
@@ -530,14 +587,16 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
             onSelectHistory={selectHistory}
             onGoLive={goLive}
             latestDiscoveryAt={latestDiscoveryAt}
+            excludeDeviceImeis={excludeDeviceImeis}
           />
           <AlertsPanel
             watchedTagIds={watchedTagIds}
             snapshots={snapshots}
             tags={whitelist}
             now={now}
-            onSelectTag={setSelectedTagId}
+            onSelectTag={selectTag}
           />
+          {selectedDevice && <DeviceCard device={selectedDevice} onClose={() => setSelectedDeviceImei(null)} />}
           {selected && (
             <TagCard
               tag={selected}

@@ -54,6 +54,8 @@ interface Props {
    *  position is known, and matched against a tag's link id (via `radioId`)
    *  to give a direct-to-base link somewhere to point at. */
   devices: DeviceRow[];
+  /** Clicking a reader's own marker selects it the same way clicking a tag does. */
+  onSelectDevice: (imei: string) => void;
 
   // --- Movement map ------------------------------------------------------------
   orgId: string | null;
@@ -183,6 +185,7 @@ export function MapView({
   historyAt,
   linkView,
   devices,
+  onSelectDevice,
   orgId,
   movementSnapshots,
   orgPoints,
@@ -492,15 +495,25 @@ export function MapView({
         devices.filter((d): d is DeviceRow & { radioId: string; lat: number; lon: number } => d.radioId !== null && d.lat !== null && d.lon !== null)
           .map((d) => [d.radioId, d]),
       );
+      const deviceByImei = new Map(
+        devices.filter((d): d is DeviceRow & { lat: number; lon: number } => d.lat !== null && d.lon !== null).map((d) => [d.imei, d]),
+      );
 
       for (const tag of snapshots) {
-        if (!latestIds.has(tag.tagId) || !tag.linkId || tag.lat === null || tag.lon === null) continue;
+        if (!latestIds.has(tag.tagId) || tag.lat === null || tag.lon === null) continue;
 
-        const targetTag = byId.get(tag.linkId);
-        const origin: { lat: number; lon: number } | undefined =
+        const targetTag = tag.linkId ? byId.get(tag.linkId) : undefined;
+        let origin: { lat: number; lon: number } | undefined =
           targetTag && targetTag.lat !== null && targetTag.lon !== null
             ? { lat: targetTag.lat, lon: targetTag.lon }
-            : deviceByRadioId.get(tag.linkId);
+            : tag.linkId
+              ? deviceByRadioId.get(tag.linkId)
+              : undefined;
+        // No relay id at all — including one that disappeared because the
+        // device that reported it got excluded — so link straight to
+        // whichever reader's own log actually carries this tag's latest
+        // reading, rather than just dropping the line for it.
+        if (!origin) origin = deviceByImei.get(tag.sourceDeviceImei);
         if (!origin) continue;
 
         const tagPoint: { lat: number; lon: number } = { lat: tag.lat, lon: tag.lon };
@@ -598,9 +611,14 @@ export function MapView({
         direction: 'top',
         offset: [0, -10],
       });
+      marker.on('click', () => {
+        // Same as a tag marker: a measurement in progress wins over selecting.
+        if (measuringIdRef.current) return;
+        onSelectDevice(device.imei);
+      });
       marker.addTo(group);
     }
-  }, [devices]);
+  }, [devices, onSelectDevice]);
 
   // Geofence boundaries — available in either view, toggled independently of
   // everything else, and never touches pan or zoom: only the attach/detach

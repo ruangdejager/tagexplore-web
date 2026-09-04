@@ -388,7 +388,7 @@ describe('user preferences', () => {
     const res = await get('/api/account/preferences', cookie);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
-      preferences: { hiddenTagIds: [], colorMode: 'discovery', lastOrgId: null, geofencesView: false },
+      preferences: { hiddenTagIds: [], colorMode: 'discovery', lastOrgId: null, geofencesView: false, hiddenDeviceImeis: [] },
     });
   });
 
@@ -396,24 +396,36 @@ describe('user preferences', () => {
     const cookie = await signup('shepherd');
     const saved = await put(
       '/api/account/preferences',
-      { hiddenTagIds: ['3E1E', '441F'], colorMode: 'latestGps', lastOrgId: 'org-a', geofencesView: true },
+      {
+        hiddenTagIds: ['3E1E', '441F'],
+        colorMode: 'latestGps',
+        lastOrgId: 'org-a',
+        geofencesView: true,
+        hiddenDeviceImeis: ['866049074634338'],
+      },
       cookie,
     );
     expect(saved.status).toBe(200);
 
     const res = await get('/api/account/preferences', cookie);
     expect(await res.json()).toEqual({
-      preferences: { hiddenTagIds: ['3E1E', '441F'], colorMode: 'latestGps', lastOrgId: 'org-a', geofencesView: true },
+      preferences: {
+        hiddenTagIds: ['3E1E', '441F'],
+        colorMode: 'latestGps',
+        lastOrgId: 'org-a',
+        geofencesView: true,
+        hiddenDeviceImeis: ['866049074634338'],
+      },
     });
   });
 
-  it('defaults a preferences row saved before geofencesView existed to "off" rather than resetting it', async () => {
+  it('defaults a preferences row saved before geofencesView/hiddenDeviceImeis existed to "off"/"none hidden" rather than resetting it', async () => {
     const cookie = await signup('shepherd');
     await put('/api/account/preferences', { hiddenTagIds: ['3E1E'], colorMode: 'age', lastOrgId: 'org-a' }, cookie);
 
     const res = await get('/api/account/preferences', cookie);
     expect(await res.json()).toEqual({
-      preferences: { hiddenTagIds: ['3E1E'], colorMode: 'age', lastOrgId: 'org-a', geofencesView: false },
+      preferences: { hiddenTagIds: ['3E1E'], colorMode: 'age', lastOrgId: 'org-a', geofencesView: false, hiddenDeviceImeis: [] },
     });
   });
 
@@ -422,13 +434,13 @@ describe('user preferences', () => {
     const otherCookie = await signup('other');
     await put(
       '/api/account/preferences',
-      { hiddenTagIds: ['3E1E'], colorMode: 'age', lastOrgId: 'org-a', geofencesView: true },
+      { hiddenTagIds: ['3E1E'], colorMode: 'age', lastOrgId: 'org-a', geofencesView: true, hiddenDeviceImeis: ['866049074634338'] },
       shepherdCookie,
     );
 
     const res = await get('/api/account/preferences', otherCookie);
     expect(await res.json()).toEqual({
-      preferences: { hiddenTagIds: [], colorMode: 'discovery', lastOrgId: null, geofencesView: false },
+      preferences: { hiddenTagIds: [], colorMode: 'discovery', lastOrgId: null, geofencesView: false, hiddenDeviceImeis: [] },
     });
   });
 

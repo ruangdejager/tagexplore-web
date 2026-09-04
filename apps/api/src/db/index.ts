@@ -338,6 +338,28 @@ function toBool(value: unknown): boolean {
   return Number(value) === 1;
 }
 
+/**
+ * `AND <alias>.device_imei NOT IN (...)` built from named placeholders, for
+ * queries that optionally drop a subset of an org's devices — one toggled
+ * off in the UI. Excluding (rather than enumerating the kept ones) means
+ * "every device switched off" naturally excludes everything, with no need
+ * for the caller to know the full device list first. Empty/undefined means
+ * no filter at all (every device kept).
+ */
+function excludeDeviceFilterClause(
+  excludeDeviceImeis: string[] | undefined,
+  alias: string,
+): { sql: string; params: Record<string, string> } {
+  if (!excludeDeviceImeis || excludeDeviceImeis.length === 0) return { sql: '', params: {} };
+  const params: Record<string, string> = {};
+  const placeholders = excludeDeviceImeis.map((imei, i) => {
+    const key = `excludeImei${i}`;
+    params[key] = imei;
+    return `:${key}`;
+  });
+  return { sql: ` AND ${alias}.device_imei NOT IN (${placeholders.join(', ')})`, params };
+}
+
 export class Store {
   private readonly db: DatabaseSyncType;
 
@@ -683,6 +705,7 @@ export class Store {
     gps_lat: number | null;
     gps_lon: number | null;
     gps_updated_at: number | null;
+    reader_fw: string | null;
     created_at: number;
   }): DeviceRow {
     return {
@@ -701,6 +724,7 @@ export class Store {
       lat: row.gps_lat,
       lon: row.gps_lon,
       gpsUpdatedAt: row.gps_updated_at,
+      readerFw: row.reader_fw,
       createdAt: row.created_at,
     };
   }
@@ -709,7 +733,10 @@ export class Store {
     SELECT d.imei, d.org_id, o.name AS org_name, d.label, d.active,
            d.report_start_minute, d.report_interval_minutes, d.report_count_per_day,
            d.poll_offset_minutes, d.last_ingest_at, d.last_ingest_status,
-           d.radio_id, d.gps_lat, d.gps_lon, d.gps_updated_at, d.created_at
+           d.radio_id, d.gps_lat, d.gps_lon, d.gps_updated_at,
+           (SELECT reader_fw FROM rounds WHERE device_imei = d.imei AND reader_fw IS NOT NULL
+             ORDER BY bracket_at DESC LIMIT 1) AS reader_fw,
+           d.created_at
     FROM devices d LEFT JOIN organisations o ON o.id = d.org_id`;
 
   listDevices(orgId?: string): DeviceRow[] {
@@ -1015,19 +1042,21 @@ export class Store {
    * "the latest discovery"; the rest is what the count-history list scrolls
    * through.
    */
-  listDiscoveryCounts(orgId: string, limit = 200): DiscoveryCountPoint[] {
+  listDiscoveryCounts(orgId: string, limit = 200, excludeDeviceImeis?: string[]): DiscoveryCountPoint[] {
+    const filter = excludeDeviceFilterClause(excludeDeviceImeis, 'r');
     const rows = this.db
       .prepare(
         `SELECT r.bracket_at AS bracket_at, COUNT(DISTINCT r.tag_id) AS count
            FROM readings r
            JOIN devices d ON d.imei = r.device_imei
-          WHERE d.org_id = ?
+          WHERE d.org_id = :org
             AND EXISTS (SELECT 1 FROM org_tags t WHERE t.org_id = d.org_id AND t.tag_id = r.tag_id)
+            ${filter.sql}
           GROUP BY r.bracket_at
           ORDER BY r.bracket_at DESC
-          LIMIT ?`,
+          LIMIT :limit`,
       )
-      .all(orgId, limit) as Array<{ bracket_at: number; count: number }>;
+      .all({ org: orgId, limit, ...filter.params }) as Array<{ bracket_at: number; count: number }>;
     return rows.map((r) => ({ bracketAt: r.bracket_at, count: r.count }));
   }
 
@@ -1045,7 +1074,8 @@ export class Store {
    * frequently carries no fix while an older one does — the position is a
    * property of the tag, not of the scan that happened to mention it.
    */
-  tagSnapshots({ orgId, from, to }: ReadingWindow): TagSnapshot[] {
+  tagSnapshots({ orgId, from, to }: ReadingWindow, excludeDeviceImeis?: string[]): TagSnapshot[] {
+    const filter = excludeDeviceFilterClause(excludeDeviceImeis, 'r');
     const rows = this.db
       .prepare(
         `WITH scoped AS (
@@ -1053,6 +1083,7 @@ export class Store {
              JOIN devices d ON d.imei = r.device_imei
             WHERE d.org_id = :org AND r.bracket_at BETWEEN :from AND :to
               AND EXISTS (SELECT 1 FROM org_tags t WHERE t.org_id = :org AND t.tag_id = r.tag_id)
+              ${filter.sql}
          ),
          latest AS (
            SELECT * FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY tag_id ORDER BY bracket_at DESC) rn FROM scoped)
@@ -1074,7 +1105,7 @@ export class Store {
            LEFT JOIN org_tags ot ON ot.org_id = :org AND ot.tag_id = l.tag_id
           ORDER BY l.bracket_at DESC, l.tag_id ASC`,
       )
-      .all({ org: orgId, from, to }) as Array<{
+      .all({ org: orgId, from, to, ...filter.params }) as Array<{
       tag_id: string;
       label: string | null;
       last_seen_at: number;

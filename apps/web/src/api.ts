@@ -89,8 +89,14 @@ function scoped(path: string, orgId: string | null, params: Record<string, strin
 export const fetchSnapshots = (
   orgId: string | null,
   hours: number,
+  excludeDeviceImeis?: string[],
 ): Promise<{ from: number; to: number; snapshots: TagSnapshot[] }> =>
-  request(scoped('/api/snapshots', orgId, { hours }));
+  request(
+    scoped('/api/snapshots', orgId, {
+      hours,
+      excludeDevices: excludeDeviceImeis?.length ? excludeDeviceImeis.join(',') : undefined,
+    }),
+  );
 
 /**
  * The whitelist's state as of one past discovery round — each tag's latest
@@ -102,8 +108,15 @@ export const fetchSnapshots = (
 export const fetchSnapshotsAt = (
   orgId: string | null,
   at: number,
+  excludeDeviceImeis?: string[],
 ): Promise<{ from: number; to: number; snapshots: TagSnapshot[] }> =>
-  request(scoped('/api/snapshots', orgId, { to: at, from: Math.max(0, at - 364 * 86_400_000) }));
+  request(
+    scoped('/api/snapshots', orgId, {
+      to: at,
+      from: Math.max(0, at - 364 * 86_400_000),
+      excludeDevices: excludeDeviceImeis?.length ? excludeDeviceImeis.join(',') : undefined,
+    }),
+  );
 
 export const fetchPositions = (
   orgId: string | null,
@@ -121,7 +134,14 @@ export const fetchTagPositions = (
 export const fetchDiscoveryCounts = (
   orgId: string | null,
   limit = 200,
-): Promise<{ counts: DiscoveryCountPoint[] }> => request(scoped('/api/discovery-counts', orgId, { limit }));
+  excludeDeviceImeis?: string[],
+): Promise<{ counts: DiscoveryCountPoint[] }> =>
+  request(
+    scoped('/api/discovery-counts', orgId, {
+      limit,
+      excludeDevices: excludeDeviceImeis?.length ? excludeDeviceImeis.join(',') : undefined,
+    }),
+  );
 
 export const fetchOrgTags = (orgId: string | null): Promise<{ tags: OrgTagRow[] }> =>
   request(scoped('/api/tags', orgId));

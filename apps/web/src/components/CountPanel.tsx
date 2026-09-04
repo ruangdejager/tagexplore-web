@@ -29,6 +29,9 @@ interface Props {
   /** Always the *live* latest discovery's time, regardless of what round is
    *  being browsed — shown beside LIVE as what it would jump back to. */
   latestDiscoveryAt: number | null;
+  /** Devices switched off in the main list — the count history's own fetch
+   *  needs this too, since it comes from a separate query than `snapshots`. */
+  excludeDeviceImeis?: string[];
 }
 
 function timestamp(ms: number): string {
@@ -52,6 +55,7 @@ export function CountPanel({
   onSelectHistory,
   onGoLive,
   latestDiscoveryAt,
+  excludeDeviceImeis,
 }: Props): JSX.Element {
   const [showHistory, setShowHistory] = useState(false);
   const [history, setHistory] = useState<DiscoveryCountPoint[] | null>(null);
@@ -63,7 +67,7 @@ export function CountPanel({
     if (!showHistory && history === null) {
       setHistoryLoading(true);
       api
-        .fetchDiscoveryCounts(orgId)
+        .fetchDiscoveryCounts(orgId, 200, excludeDeviceImeis)
         .then((res) => setHistory(res.counts))
         .catch(() => setHistory([]))
         .finally(() => setHistoryLoading(false));
@@ -74,14 +78,15 @@ export function CountPanel({
   // Once loaded, keeps itself in sync with every live poll instead of going
   // stale until the page is refreshed — `latestDiscoveryAt` changes exactly
   // when a new round actually lands, live poll or manual Refresh, regardless
-  // of which round is currently being browsed.
+  // of which round is currently being browsed. A device switched off refetches
+  // the same way, since that changes every row's own count too.
   useEffect(() => {
     if (history === null) return;
     api
-      .fetchDiscoveryCounts(orgId)
+      .fetchDiscoveryCounts(orgId, 200, excludeDeviceImeis)
       .then((res) => setHistory(res.counts))
       .catch(() => {});
-  }, [latestDiscoveryAt, orgId]);
+  }, [latestDiscoveryAt, orgId, excludeDeviceImeis]);
 
   const isLive = historyAt === null;
 

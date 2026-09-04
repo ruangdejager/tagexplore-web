@@ -50,6 +50,21 @@ function readWindow(query: Record<string, string | undefined>, nowMs: number): W
   return { from, to };
 }
 
+/**
+ * `excludeDevices=imei1,imei2` drops those devices' readings from a query — a
+ * device switched off in the main list. Absent or empty means no filter at
+ * all (every device kept).
+ */
+function parseExcludeDeviceImeis(query: Record<string, string | undefined>): string[] | undefined {
+  const raw = query['excludeDevices'];
+  if (!raw) return undefined;
+  const ids = raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return ids.length ? ids : undefined;
+}
+
 export function bucketMinutesFor(from: number, to: number, floorMinutes: number): number {
   const rangeMinutes = (to - from) / 60_000;
   return Math.max(floorMinutes, Math.ceil(rangeMinutes / TARGET_CHART_POINTS));
@@ -109,7 +124,7 @@ export function createApi(deps: ApiDeps): Hono<Env> {
     return c.json({
       from: window.from,
       to: window.to,
-      snapshots: deps.store.tagSnapshots({ orgId: c.get('orgId'), ...window }),
+      snapshots: deps.store.tagSnapshots({ orgId: c.get('orgId'), ...window }, parseExcludeDeviceImeis(c.req.query())),
     });
   });
 
@@ -152,7 +167,7 @@ export function createApi(deps: ApiDeps): Hono<Env> {
   /** Per-round unique-tag counts, newest first — the count panel's "latest" figure and its history list. */
   api.get('/discovery-counts', (c) => {
     const limit = Math.min(1000, Number(c.req.query('limit') ?? 200) || 200);
-    return c.json({ counts: deps.store.listDiscoveryCounts(c.get('orgId'), limit) });
+    return c.json({ counts: deps.store.listDiscoveryCounts(c.get('orgId'), limit, parseExcludeDeviceImeis(c.req.query())) });
   });
 
   /**

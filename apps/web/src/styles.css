@@ -400,17 +400,21 @@ aside {
 .row-visibility {
   width: 14px;
   height: 14px;
-  border: 1px solid var(--ink-dim);
+  border: 1px solid var(--ink);
   border-radius: 2px;
   flex: none;
   padding: 0;
+  background: transparent;
 }
 .row-visibility[data-on='1'] {
   background: var(--ink-dim);
-  border-color: var(--ink-dim);
 }
-.row-visibility[data-on='0'] {
-  background: transparent;
+/* A device's own toggle reaches further than a tag's (it drops the device's
+   readings everywhere, not just off the map) — the same purple as its marker
+   on the map keeps that distinct at a glance. Border only: the on/off fill
+   is the same grey as a tag's toggle either way. */
+.device-row .row-visibility {
+  border-color: #a855f7;
 }
 .row .sn {
   font-family: var(--mono);
@@ -438,6 +442,16 @@ aside {
   display: block;
   height: 100%;
   border-radius: 3px 0 0 3px;
+}
+
+.device-list {
+  flex: none;
+  max-height: 160px;
+  border-bottom: 2px solid var(--line);
+  margin-bottom: 4px;
+}
+.device-row {
+  grid-template-columns: auto 3px 1fr;
 }
 
 .empty {

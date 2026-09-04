@@ -8,12 +8,19 @@ const DEFAULT_PREFERENCES: UserPreferences = {
   colorMode: 'discovery',
   lastOrgId: null,
   geofencesView: false,
+  hiddenDeviceImeis: [],
 };
 
-// `geofencesView` is optional here on purpose: a preferences row saved before
-// this field existed has no such key, and should still validate — read back
-// as "off", not fall through to every other saved preference resetting too.
-function isUserPreferences(value: unknown): value is Omit<UserPreferences, 'geofencesView'> & { geofencesView?: boolean } {
+// `geofencesView` and `hiddenDeviceImeis` are optional here on purpose: a
+// preferences row saved before either field existed has no such key, and
+// should still validate — read back as "off"/"none hidden", not fall through
+// to every other saved preference resetting too.
+function isUserPreferences(
+  value: unknown,
+): value is Omit<UserPreferences, 'geofencesView' | 'hiddenDeviceImeis'> & {
+  geofencesView?: boolean;
+  hiddenDeviceImeis?: string[];
+} {
   if (!value || typeof value !== 'object') return false;
   const v = value as Record<string, unknown>;
   return (
@@ -21,7 +28,9 @@ function isUserPreferences(value: unknown): value is Omit<UserPreferences, 'geof
     v['hiddenTagIds'].every((id) => typeof id === 'string') &&
     (v['colorMode'] === 'age' || v['colorMode'] === 'latestGps' || v['colorMode'] === 'discovery') &&
     (v['lastOrgId'] === null || typeof v['lastOrgId'] === 'string') &&
-    (v['geofencesView'] === undefined || typeof v['geofencesView'] === 'boolean')
+    (v['geofencesView'] === undefined || typeof v['geofencesView'] === 'boolean') &&
+    (v['hiddenDeviceImeis'] === undefined ||
+      (Array.isArray(v['hiddenDeviceImeis']) && v['hiddenDeviceImeis'].every((id) => typeof id === 'string')))
   );
 }
 
@@ -80,7 +89,7 @@ export function createAccountApi(deps: AccountDeps): Hono<Env> {
     const raw = deps.store.getUserPreferences(c.get('userId'));
     const parsed: unknown = raw ? JSON.parse(raw) : null;
     const preferences: UserPreferences = isUserPreferences(parsed)
-      ? { ...parsed, geofencesView: parsed.geofencesView ?? false }
+      ? { ...parsed, geofencesView: parsed.geofencesView ?? false, hiddenDeviceImeis: parsed.hiddenDeviceImeis ?? [] }
       : DEFAULT_PREFERENCES;
     return c.json({ preferences });
   });
