@@ -7,6 +7,9 @@ interface Props {
   snapshots: TagSnapshot[];
   tags: OrgTagRow[];
   now: number;
+  /** Same handler the tag list's own rows call — clicking a tag here selects
+   *  it the same way, which is what pans the map to its last known location. */
+  onSelectTag: (tagId: string) => void;
 }
 
 const STALE_HOURS = 8;
@@ -18,7 +21,7 @@ const STALE_HOURS = 8;
  * nothing at all when there is nothing to report, rather than a reassuring
  * "no problems" line — an empty corner says that just as well.
  */
-export function AlertsPanel({ watchedTagIds, snapshots, tags, now }: Props): JSX.Element | null {
+export function AlertsPanel({ watchedTagIds, snapshots, tags, now, onSelectTag }: Props): JSX.Element | null {
   const [expanded, setExpanded] = useState(false);
   const labelFor = useMemo(() => new Map(tags.map((t) => [t.tagId, t.label])), [tags]);
 
@@ -58,7 +61,18 @@ export function AlertsPanel({ watchedTagIds, snapshots, tags, now }: Props): JSX
         <div className="alerts-list">
           {alerts.map((a) => (
             <div key={a.key} className="alert-row">
-              <span className="alert-tag">
+              <span
+                className="alert-tag"
+                role="button"
+                tabIndex={0}
+                onClick={() => onSelectTag(a.tagId)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    onSelectTag(a.tagId);
+                  }
+                }}
+              >
                 {a.tagId}
                 {labelFor.get(a.tagId) && <span className="tag-label"> {labelFor.get(a.tagId)}</span>}
               </span>

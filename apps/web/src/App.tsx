@@ -90,6 +90,11 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   const [mainView, setMainView] = useState<MainView>('global');
   const [selectedTagId, setSelectedTagId] = useState<string | null>(null);
   const [fitNonce, setFitNonce] = useState(0);
+  // Which past discovery round (the count history's `bracketAt`) the map is
+  // showing instead of the live state — null means live. Owned here, not
+  // inside CountPanel, because it has to reach the map.
+  const [historyAt, setHistoryAt] = useState<number | null>(null);
+  const [historySnapshots, setHistorySnapshots] = useState<TagSnapshot[] | null>(null);
   const [trendTags, setTrendTags] = useState<Set<string>>(new Set());
   // Tucked out of the way by default — the map is the main event, and this is
   // a drawer for when battery history is actually wanted. Owned here (not
@@ -127,6 +132,33 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
     const timer = setInterval(() => setNow(Date.now()), 30_000);
     return () => clearInterval(timer);
   }, []);
+
+  // A different organisation invalidates whatever past round was showing —
+  // its history belongs to the org that was picked when it loaded.
+  useEffect(() => {
+    setHistoryAt(null);
+  }, [orgId]);
+
+  // Fetches the whitelist's state as of the picked round — same shape as the
+  // live snapshots, so the map can show it through the very same prop.
+  useEffect(() => {
+    if (historyAt === null || !orgId) {
+      setHistorySnapshots(null);
+      return;
+    }
+    let cancelled = false;
+    api
+      .fetchSnapshotsAt(orgId, historyAt)
+      .then((res) => {
+        if (!cancelled) setHistorySnapshots(res.snapshots);
+      })
+      .catch(() => {
+        if (!cancelled) setHistorySnapshots([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [historyAt, orgId]);
 
   useEffect(() => {
     if (!isAdmin) {
@@ -239,8 +271,23 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
     return [...filtered].sort((a, b) => b.lastSeenAt - a.lastSeenAt);
   }, [snapshots, query]);
 
+  // What the map actually plots: the live state, unless a past discovery
+  // round is picked, in which case it's that round's snapshot instead — same
+  // shape, same search/hide filters, just a different source array. This is
+  // the only thing that changes when browsing history; the map's own pan and
+  // zoom are never touched by it (see MapView's markers effect).
+  const mapSourceSnapshots = historyAt !== null && historySnapshots !== null ? historySnapshots : snapshots;
+  const mapVisible = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return needle
+      ? mapSourceSnapshots.filter(
+          (tag: TagSnapshot) =>
+            tag.tagId.toLowerCase().includes(needle) || (tag.label ?? '').toLowerCase().includes(needle),
+        )
+      : mapSourceSnapshots;
+  }, [mapSourceSnapshots, query]);
   /** The map's markers: the same list, minus whatever the per-tag toggle hid. */
-  const mapTags = useMemo(() => visible.filter((tag) => !hiddenFromMap.has(tag.tagId)), [visible, hiddenFromMap]);
+  const mapTags = useMemo(() => mapVisible.filter((tag) => !hiddenFromMap.has(tag.tagId)), [mapVisible, hiddenFromMap]);
 
   // The same per-tag list toggle also decides what counts as "toggled on" for
   // the unique-tag count and the alerts panel — a tag switched off is left out
@@ -272,6 +319,14 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
       else next.add(tagId);
       return next;
     });
+  }, []);
+
+  const selectHistory = useCallback((bracketAt: number): void => {
+    setHistoryAt(bracketAt);
+  }, []);
+
+  const goLive = useCallback((): void => {
+    setHistoryAt(null);
   }, []);
 
   const toggleTrendTag = useCallback((tagId: string): void => {
@@ -465,8 +520,17 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
             orgId={orgId}
             windowChoice={discoveryWindow}
             onWindowChange={setDiscoveryWindow}
+            historyAt={historyAt}
+            onSelectHistory={selectHistory}
+            onGoLive={goLive}
           />
-          <AlertsPanel watchedTagIds={watchedTagIds} snapshots={snapshots} tags={whitelist} now={now} />
+          <AlertsPanel
+            watchedTagIds={watchedTagIds}
+            snapshots={snapshots}
+            tags={whitelist}
+            now={now}
+            onSelectTag={setSelectedTagId}
+          />
           {selected && (
             <TagCard
               tag={selected}

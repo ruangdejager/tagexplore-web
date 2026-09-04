@@ -92,6 +92,19 @@ export const fetchSnapshots = (
 ): Promise<{ from: number; to: number; snapshots: TagSnapshot[] }> =>
   request(scoped('/api/snapshots', orgId, { hours }));
 
+/**
+ * The whitelist's state as of one past discovery round — each tag's latest
+ * reading at or before `at`, same shape as the live snapshot list. Powers the
+ * count panel's history: clicking a past round shows the map as it looked
+ * then. `from` reaches back the server's own 365-day window cap so a tag that
+ * hadn't reported in a while still shows its last known position.
+ */
+export const fetchSnapshotsAt = (
+  orgId: string | null,
+  at: number,
+): Promise<{ from: number; to: number; snapshots: TagSnapshot[] }> =>
+  request(scoped('/api/snapshots', orgId, { to: at, from: Math.max(0, at - 364 * 86_400_000) }));
+
 export const fetchPositions = (
   orgId: string | null,
   hours: number,

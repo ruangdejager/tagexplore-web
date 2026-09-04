@@ -19,6 +19,11 @@ interface Props {
    */
   windowChoice: DiscoveryWindow;
   onWindowChange: (window: DiscoveryWindow) => void;
+  /** Which past discovery round the map is currently showing — `null` means
+   *  the live/latest state, which is also what the LIVE badge reflects. */
+  historyAt: number | null;
+  onSelectHistory: (bracketAt: number) => void;
+  onGoLive: () => void;
 }
 
 function timestamp(ms: number): string {
@@ -32,7 +37,16 @@ function timestamp(ms: number): string {
  * hour window. Only the scrollable history (one row per past discovery round)
  * needs its own fetch, and only once asked for.
  */
-export function CountPanel({ snapshots, now, orgId, windowChoice, onWindowChange }: Props): JSX.Element {
+export function CountPanel({
+  snapshots,
+  now,
+  orgId,
+  windowChoice,
+  onWindowChange,
+  historyAt,
+  onSelectHistory,
+  onGoLive,
+}: Props): JSX.Element {
   const [showHistory, setShowHistory] = useState(false);
   const [history, setHistory] = useState<DiscoveryCountPoint[] | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -51,8 +65,20 @@ export function CountPanel({ snapshots, now, orgId, windowChoice, onWindowChange
     setShowHistory((v) => !v);
   };
 
+  const isLive = historyAt === null;
+
   return (
     <div className="card count-panel">
+      <button
+        type="button"
+        className="live-badge"
+        data-live={isLive ? '1' : '0'}
+        onClick={onGoLive}
+        title={isLive ? 'Showing the latest snapshot' : 'Jump back to the latest snapshot'}
+      >
+        <span className="live-dot" aria-hidden="true" />
+        LIVE
+      </button>
       <h3>
         {count}/{snapshots.length}
       </h3>
@@ -78,10 +104,16 @@ export function CountPanel({ snapshots, now, orgId, windowChoice, onWindowChange
             </div>
           ) : history && history.length > 0 ? (
             history.map((h) => (
-              <div key={h.bracketAt} className="count-history-row">
+              <button
+                key={h.bracketAt}
+                type="button"
+                className={`count-history-row${h.bracketAt === historyAt ? ' active' : ''}`}
+                onClick={() => onSelectHistory(h.bracketAt)}
+                title="Show this round's snapshot on the map"
+              >
                 <span>{timestamp(h.bracketAt)}</span>
                 <span>{h.count}</span>
-              </div>
+              </button>
             ))
           ) : (
             <div className="empty" style={{ padding: '10px 0' }}>
