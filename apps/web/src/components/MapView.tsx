@@ -73,9 +73,15 @@ interface Props {
   geofencesView: boolean;
 }
 
-/** True when the tag's most recent reading — not just some earlier one — carried a GPS fix. */
-function hasFreshGps(tag: TagSnapshot): boolean {
-  return tag.fixAt !== null && tag.fixAt === tag.lastSeenAt;
+/**
+ * "GPS state" is discovery state first, GPS second: a tag only reads as Live
+ * if it was actually part of the latest discovery round — not just its own
+ * personal latest reading — and that same round's reading carried a GPS fix.
+ * A tag that reported a fix an hour before everyone else's latest round is
+ * Stale here even though `hasFreshGps` alone would call it fresh.
+ */
+function isGpsLive(tag: TagSnapshot, latestRoundIds: Set<string>): boolean {
+  return latestRoundIds.has(tag.tagId) && tag.fixAt !== null && tag.fixAt === tag.lastSeenAt;
 }
 
 /**
@@ -393,6 +399,10 @@ export function MapView({
     // instead of the real clock, so a tag's colour reflects how stale it
     // actually was back then.
     const now = historyAt ?? Date.now();
+    // 'latest' ignores `now` entirely — it just picks whichever tags share
+    // the newest `lastSeenAt` in `snapshots`, so this is already the round
+    // being browsed while browsing history, not the real latest round.
+    const latestRoundIds = checkedInTagIds(snapshots, 'latest', now);
 
     for (const tag of snapshots) {
       if (tag.lat === null || tag.lon === null) continue;
@@ -403,7 +413,7 @@ export function MapView({
             ? discoveryIds.has(tag.tagId)
               ? AGE_COLOR.live
               : AGE_COLOR.none
-            : hasFreshGps(tag)
+            : isGpsLive(tag, latestRoundIds)
               ? AGE_COLOR.live
               : AGE_COLOR.none;
       const marker = L.circleMarker([tag.lat, tag.lon], {

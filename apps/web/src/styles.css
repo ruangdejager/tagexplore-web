@@ -709,6 +709,7 @@ main {
 }
 .live-badge[data-live='0'] {
   color: var(--ink-dim);
+  border-color: var(--ink-dim);
 }
 .count-history {
   margin-top: 8px;

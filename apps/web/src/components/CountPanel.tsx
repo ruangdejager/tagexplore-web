@@ -4,12 +4,14 @@ import * as api from '../api.js';
 
 interface Props {
   /**
-   * Every tag currently toggled on in the main list — a tag switched off
-   * counts for nothing here, the same way it's absent from the map.
-   * `snapshots.length` is also the fraction's denominator: "count/total"
-   * toggled-on tags, not count against the whole whitelist.
+   * Whatever the fraction actually counts against — the live toggled-on set
+   * when showing live, or the browsed round's own set otherwise, same as
+   * what the map itself is plotting. `snapshots.length` is the fraction's
+   * denominator: tags in that set, not the whole whitelist.
    */
   snapshots: TagSnapshot[];
+  /** The reference time `windowChoice`'s numeric windows count back from —
+   *  the browsed round's own time while browsing history, live "now" otherwise. */
   now: number;
   orgId: string | null;
   /**
@@ -24,6 +26,9 @@ interface Props {
   historyAt: number | null;
   onSelectHistory: (bracketAt: number) => void;
   onGoLive: () => void;
+  /** Always the *live* latest discovery's time, regardless of what round is
+   *  being browsed — shown beside LIVE as what it would jump back to. */
+  latestDiscoveryAt: number | null;
 }
 
 function timestamp(ms: number): string {
@@ -46,6 +51,7 @@ export function CountPanel({
   historyAt,
   onSelectHistory,
   onGoLive,
+  latestDiscoveryAt,
 }: Props): JSX.Element {
   const [showHistory, setShowHistory] = useState(false);
   const [history, setHistory] = useState<DiscoveryCountPoint[] | null>(null);
@@ -66,25 +72,25 @@ export function CountPanel({
   };
 
   // Once loaded, keeps itself in sync with every live poll instead of going
-  // stale until the page is refreshed — `snapshots` changes identity exactly
-  // when the parent's own snapshot fetch (poll or manual Refresh) lands.
+  // stale until the page is refreshed — `latestDiscoveryAt` changes exactly
+  // when a new round actually lands, live poll or manual Refresh, regardless
+  // of which round is currently being browsed.
   useEffect(() => {
     if (history === null) return;
     api
       .fetchDiscoveryCounts(orgId)
       .then((res) => setHistory(res.counts))
       .catch(() => {});
-  }, [snapshots, orgId]);
+  }, [latestDiscoveryAt, orgId]);
 
   const isLive = historyAt === null;
-  const latestAt = snapshots.length > 0 ? Math.max(...snapshots.map((s) => s.lastSeenAt)) : null;
 
   return (
     <div className="card count-panel">
       <div className="live-status">
-        {latestAt !== null && (
+        {latestDiscoveryAt !== null && (
           <span className="live-at" title="Time of the latest discovery round">
-            {timestamp(latestAt)}
+            {timestamp(latestDiscoveryAt)}
           </span>
         )}
         <button

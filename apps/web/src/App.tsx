@@ -294,6 +294,12 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   // of both, the same way it's left off the map.
   const toggledSnapshots = useMemo(() => snapshots.filter((s) => !hiddenFromMap.has(s.tagId)), [snapshots, hiddenFromMap]);
   const watchedTagIds = useMemo(() => new Set(toggledSnapshots.map((s) => s.tagId)), [toggledSnapshots]);
+  // Always the live latest round's time, regardless of what's being browsed —
+  // what the LIVE badge shows as the thing it would jump back to.
+  const latestDiscoveryAt = useMemo(
+    () => (toggledSnapshots.length > 0 ? Math.max(...toggledSnapshots.map((s) => s.lastSeenAt)) : null),
+    [toggledSnapshots],
+  );
 
   // The discovery-state legend colours markers by the same checked-in set the
   // count panel's fraction counts, for whatever window is currently picked —
@@ -378,7 +384,7 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
         </button>
 
         <div className="tally">
-          <b>{whitelist.length}</b> Tags · <b>{devices.length}</b> devices
+          <b>{whitelist.length}</b> tags · <b>{devices.length}</b> devices
           {loading && ' · loading…'}
           {error && <span className="status-error"> · {error}</span>}
         </div>
@@ -523,14 +529,15 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
       >
         <div className="map-topleft">
           <CountPanel
-            snapshots={toggledSnapshots}
-            now={now}
+            snapshots={mapToggledSnapshots}
+            now={historyAt ?? now}
             orgId={orgId}
             windowChoice={discoveryWindow}
             onWindowChange={setDiscoveryWindow}
             historyAt={historyAt}
             onSelectHistory={selectHistory}
             onGoLive={goLive}
+            latestDiscoveryAt={latestDiscoveryAt}
           />
           <AlertsPanel
             watchedTagIds={watchedTagIds}
