@@ -6,6 +6,7 @@ import {
   ageColor,
   checkedInTagIds,
   type DeviceRow,
+  type DiscoveryWindow,
   type GeofenceRegion,
   type GpsPoint,
   type TagPosition,
@@ -39,6 +40,10 @@ interface Props {
   heatmapView: boolean;
   heatPoints: GpsPoint[];
   colorMode: MarkerColorMode;
+  /** The unique-tag count dropdown's own window — "Gps state" ties Live/Stale
+   *  to this same duration, so picking "Last 6h" there also means a marker
+   *  reads Live only if its GPS fix landed within the last 6h. */
+  gpsWindow: DiscoveryWindow;
   /** The past discovery round currently shown, or `null` for live — the
    *  reference point 'age' mode ages a fix against, and 'discovery'/'latestGps'
    *  use it (via `snapshots`) to work out which tags were actually part of
@@ -73,14 +78,22 @@ interface Props {
 }
 
 /**
- * "GPS state" is discovery state first, GPS second: a tag only reads as Live
- * if it was actually part of the latest discovery round — not just its own
- * personal latest reading — and that same round's reading carried a GPS fix.
- * A tag that reported a fix an hour before everyone else's latest round is
- * Stale here even though `hasFreshGps` alone would call it fresh.
+ * "GPS state" tracks the same window the count panel's dropdown is set to.
+ * For "Latest discovery" that's discovery state first, GPS second: a tag
+ * only reads as Live if it was actually part of the latest discovery round —
+ * not just its own personal latest reading — and that same round's reading
+ * carried a GPS fix. For a numeric window (e.g. "Last 6h") it's a plain GPS
+ * freshness cutoff: Live means the fix itself landed within that many hours.
  */
-function isGpsLive(tag: TagSnapshot, latestRoundIds: Set<string>): boolean {
-  return latestRoundIds.has(tag.tagId) && tag.fixAt !== null && tag.fixAt === tag.lastSeenAt;
+function gpsLiveTagIds(snapshots: TagSnapshot[], window: DiscoveryWindow, nowMs: number): Set<string> {
+  if (window === 'latest') {
+    const latestRoundIds = checkedInTagIds(snapshots, 'latest', nowMs);
+    return new Set(
+      snapshots.filter((t) => latestRoundIds.has(t.tagId) && t.fixAt !== null && t.fixAt === t.lastSeenAt).map((t) => t.tagId),
+    );
+  }
+  const cutoff = nowMs - Number(window) * 3_600_000;
+  return new Set(snapshots.filter((t) => t.fixAt !== null && t.fixAt >= cutoff).map((t) => t.tagId));
 }
 
 /**
@@ -98,10 +111,10 @@ type BaseName = keyof typeof MAX_ZOOM;
  * cluster to reach red — not two or three overlapping points. `radius` is kept
  * small for fine spatial resolution (a coarse blob hides exactly the density
  * differences this view exists to show); `max` is the density level mapped to
- * full intensity, and is set well above what a lightly-visited spot reaches, so
+ * full intensity, and is set above what a lightly-visited spot reaches, so
  * only genuinely dense areas climb the gradient toward red.
  */
-const HEATMAP_OPTIONS: L.HeatMapOptions = { radius: 12, blur: 10, max: 14, minOpacity: 0.08 };
+const HEATMAP_OPTIONS: L.HeatMapOptions = { radius: 12, blur: 10, max: 11, minOpacity: 0.08 };
 
 /** Colour for a link line and its arrow — the same green the app already uses for "live"/"checked in". */
 const LINK_COLOR = '#4FBF8B';
@@ -182,6 +195,7 @@ export function MapView({
   heatmapView,
   heatPoints,
   colorMode,
+  gpsWindow,
   historyAt,
   linkView,
   devices,
@@ -402,6 +416,7 @@ export function MapView({
     // the newest `lastSeenAt` in `snapshots`, so this is already the round
     // being browsed while browsing history, not the real latest round.
     const latestRoundIds = checkedInTagIds(snapshots, 'latest', now);
+    const liveGpsIds = colorMode === 'latestGps' ? gpsLiveTagIds(snapshots, gpsWindow, now) : null;
 
     for (const tag of snapshots) {
       if (tag.lat === null || tag.lon === null) continue;
@@ -412,7 +427,7 @@ export function MapView({
             ? latestRoundIds.has(tag.tagId)
               ? AGE_COLOR.live
               : AGE_COLOR.none
-            : isGpsLive(tag, latestRoundIds)
+            : liveGpsIds?.has(tag.tagId)
               ? AGE_COLOR.live
               : AGE_COLOR.none;
       const marker = L.circleMarker([tag.lat, tag.lon], {
@@ -436,7 +451,7 @@ export function MapView({
       marker.addTo(group);
       byTag.current.set(tag.tagId, marker);
     }
-  }, [snapshots, onSelect, colorMode, historyAt, finishMeasurement]);
+  }, [snapshots, onSelect, colorMode, gpsWindow, historyAt, finishMeasurement]);
 
   // Markers vs. a density cloud of every raw fix, only in global mode — never
   // both at once, and never while the movement map is showing instead. The

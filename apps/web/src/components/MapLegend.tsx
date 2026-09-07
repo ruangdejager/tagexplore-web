@@ -1,9 +1,13 @@
-import { AGE_COLOR, type PositionAge } from '@tagexplore/core';
+import { AGE_COLOR, DISCOVERY_WINDOWS, type DiscoveryWindow, type PositionAge } from '@tagexplore/core';
 import type { MarkerColorMode } from './MapView.js';
 
 interface Props {
   mode: MarkerColorMode;
   onChange: (mode: MarkerColorMode) => void;
+  /** The count panel's own dropdown — "Gps state" ages its Live/Stale split
+   *  off the same window rather than a fixed one, so the legend's label
+   *  needs it too. */
+  gpsWindow: DiscoveryWindow;
 }
 
 /**
@@ -27,7 +31,8 @@ const AGE_LEGEND: Array<{ age: PositionAge; label: string }> = [
  * on GPS state's (green/grey) — what differs is which tags earn green: a
  * fresh GPS fix there, membership in the count panel's checked-in set here.
  */
-export function MapLegend({ mode, onChange }: Props): JSX.Element {
+export function MapLegend({ mode, onChange, gpsWindow }: Props): JSX.Element {
+  const gpsWindowLabel = DISCOVERY_WINDOWS.find((w) => w.value === gpsWindow)?.label ?? '';
   return (
     <div className="legend-stack">
       <button className="legend" data-active={mode === 'age' ? '1' : '0'} onClick={() => onChange('age')}>
@@ -40,7 +45,7 @@ export function MapLegend({ mode, onChange }: Props): JSX.Element {
         ))}
       </button>
       <button className="legend" data-active={mode === 'latestGps' ? '1' : '0'} onClick={() => onChange('latestGps')}>
-        <div className="legend-title">Gps state</div>
+        <div className="legend-title">Gps state · {gpsWindowLabel}</div>
         <div>
           <i style={{ background: AGE_COLOR.live }} />
           Live

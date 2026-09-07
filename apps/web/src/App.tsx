@@ -571,6 +571,7 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
         geofences={geofences}
         geofencesView={geofencesView}
         colorMode={colorMode}
+        gpsWindow={discoveryWindow}
         historyAt={historyAt}
         orgId={orgId}
         movementSnapshots={toggledSnapshots}
@@ -610,7 +611,7 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
             />
           )}
         </div>
-        <MapLegend mode={colorMode} onChange={setColorMode} />
+        <MapLegend mode={colorMode} onChange={setColorMode} gpsWindow={discoveryWindow} />
       </MapView>
 
       <BatteryTrends
