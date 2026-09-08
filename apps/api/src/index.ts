@@ -14,6 +14,7 @@ import { createAccountApi } from './routes/account.js';
 import { createAdminApi } from './routes/admin.js';
 import { createApi } from './routes/api.js';
 import { createAuthApi } from './routes/auth.js';
+import { createBotApi, createProvisionApi } from './routes/bot.js';
 
 const config = loadConfig();
 const store = new Store(config.dbPath, config.foundingAdminUsername);
@@ -42,6 +43,11 @@ app.get('/api/health', (c) => c.json({ ok: true }));
 app.route('/api/auth', createAuthApi({ store, cookieSecure }));
 app.route('/api/account', createAccountApi({ store }));
 app.route('/api/admin', createAdminApi({ store, config }));
+// The Telegram bot's two surfaces: a per-org read API (bearer bot token) and a
+// server-to-server provisioning API (shared BOT_PROVISION_TOKEN). Registered
+// before the catch-all `/api` so their paths aren't shadowed by it.
+app.route('/api/bot', createBotApi({ store }));
+app.route('/api/provision', createProvisionApi({ store, config }));
 app.route('/api', createApi({ store, config }));
 
 // --- Static hosting -------------------------------------------------------
@@ -85,6 +91,7 @@ const server = serve({ fetch: app.fetch, port: config.port }, (info) => {
   console.log(`  data:      ${config.dataDir}`);
   console.log(`  web build: ${hasWebBuild ? webRoot : '(none — use the Vite dev server)'}`);
   console.log(`  settings API: ${config.settingsApiToken ? 'configured' : 'not configured (devices keep their stored schedule)'}`);
+  console.log(`  bot provisioning: ${config.botProvisionToken ? 'enabled' : 'disabled (BOT_PROVISION_TOKEN unset)'}`);
 });
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {

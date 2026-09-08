@@ -223,6 +223,25 @@ CREATE TABLE IF NOT EXISTS user_preferences (
   user_id  TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
   prefs    TEXT NOT NULL
 );
+
+-- Access tokens for the Telegram bot process. Each token grants a single
+-- Telegram worker bot read-only access to exactly one organisation, at a
+-- fixed level (dev = full technical view, client = reduced). The bot presents
+-- the raw token as a bearer credential; only its hash is stored here, so a
+-- leak of this table can't be replayed. This is the *only* coupling between
+-- the two projects: the web app populates every table above from the logs,
+-- the bot reads through these tokens and never touches a log itself.
+CREATE TABLE IF NOT EXISTS bot_tokens (
+  id            TEXT PRIMARY KEY,
+  token_hash    TEXT NOT NULL UNIQUE,
+  org_id        TEXT NOT NULL REFERENCES organisations(id) ON DELETE CASCADE,
+  level         TEXT NOT NULL DEFAULT 'client',
+  label         TEXT NOT NULL DEFAULT '',
+  created_at    INTEGER NOT NULL,
+  last_used_at  INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS bot_tokens_org ON bot_tokens(org_id);
 `;
 
 export interface UserRow {
@@ -271,6 +290,34 @@ export interface ReadingWindow {
   orgId: string;
   from: number;
   to: number;
+}
+
+/** A raw `readings` row, snake_case as SQLite returns it — what the bot API ships. */
+export interface BotReadingRow {
+  bracket_at: number;
+  device_imei: string;
+  tag_id: string;
+  battery_mv: number | null;
+  rssi: number | null;
+  hops: number | null;
+  wave_count: number | null;
+  movement_state: number | null;
+  lat: number | null;
+  lon: number | null;
+  has_gps: number;
+  fw_patch: number | null;
+  gps_age_s: number | null;
+}
+
+/** A raw `rounds` row, snake_case as SQLite returns it. */
+export interface BotRoundRow {
+  bracket_at: number;
+  device_imei: string;
+  tag_count: number;
+  duration_seconds: number | null;
+  unit_battery_mv: number | null;
+  reader_fw: string | null;
+  timed_out: number;
 }
 
 /**
@@ -1286,6 +1333,111 @@ export class Store {
         'INSERT INTO user_preferences (user_id, prefs) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET prefs = excluded.prefs',
       )
       .run(userId, prefsJson);
+  }
+
+  // --- Bot access tokens ----------------------------------------------------
+
+  createBotToken(id: string, tokenHash: string, orgId: string, level: string, label: string, createdAt: number): void {
+    this.db
+      .prepare('INSERT INTO bot_tokens (id, token_hash, org_id, level, label, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(id, tokenHash, orgId, level, label, createdAt);
+  }
+
+  /** Resolve a presented token (by its hash) to the org + level it grants, or null. */
+  getBotTokenByHash(tokenHash: string): { id: string; orgId: string; level: string } | null {
+    const row = this.db
+      .prepare('SELECT id, org_id, level FROM bot_tokens WHERE token_hash = ?')
+      .get(tokenHash) as { id: string; org_id: string; level: string } | undefined;
+    return row ? { id: row.id, orgId: row.org_id, level: row.level } : null;
+  }
+
+  touchBotToken(id: string, at: number): void {
+    this.db.prepare('UPDATE bot_tokens SET last_used_at = ? WHERE id = ?').run(at, id);
+  }
+
+  setBotTokenLevel(id: string, level: string): boolean {
+    const info = this.db.prepare('UPDATE bot_tokens SET level = ? WHERE id = ?').run(level, id);
+    return info.changes > 0;
+  }
+
+  /** All tokens, newest first — never the hash, only what an admin needs to see. */
+  listBotTokens(): Array<{
+    id: string;
+    orgId: string;
+    orgName: string | null;
+    level: string;
+    label: string;
+    createdAt: number;
+    lastUsedAt: number | null;
+  }> {
+    const rows = this.db
+      .prepare(
+        `SELECT t.id, t.org_id, o.name AS org_name, t.level, t.label, t.created_at, t.last_used_at
+           FROM bot_tokens t LEFT JOIN organisations o ON o.id = t.org_id
+          ORDER BY t.created_at DESC`,
+      )
+      .all() as Array<{
+      id: string;
+      org_id: string;
+      org_name: string | null;
+      level: string;
+      label: string;
+      created_at: number;
+      last_used_at: number | null;
+    }>;
+    return rows.map((r) => ({
+      id: r.id,
+      orgId: r.org_id,
+      orgName: r.org_name,
+      level: r.level,
+      label: r.label,
+      createdAt: r.created_at,
+      lastUsedAt: r.last_used_at,
+    }));
+  }
+
+  deleteBotToken(id: string): boolean {
+    const info = this.db.prepare('DELETE FROM bot_tokens WHERE id = ?').run(id);
+    return info.changes > 0;
+  }
+
+  // --- Raw readings for the bot ---------------------------------------------
+
+  /**
+   * Every raw reading for the organisation's devices in the window — NOT
+   * whitelist-filtered, deliberately: the dev bot's raw discovery tables must
+   * show exactly what the readers reported, and the bot applies the whitelist
+   * itself for its client-facing views. This is the workhorse the bot rebuilds
+   * all of its "sessions" from; everything else it shows derives from these
+   * rows plus `listRoundsWindow`.
+   */
+  listReadingsWindow(orgId: string, from: number, to: number): BotReadingRow[] {
+    const rows = this.db
+      .prepare(
+        `SELECT r.bracket_at, r.device_imei, r.tag_id, r.battery_mv, r.rssi, r.hops, r.wave_count,
+                r.movement_state, r.lat, r.lon, r.has_gps, r.fw_patch, r.gps_age_s
+           FROM readings r
+           JOIN devices d ON d.imei = r.device_imei
+          WHERE d.org_id = ? AND r.bracket_at BETWEEN ? AND ?
+          ORDER BY r.bracket_at ASC`,
+      )
+      .all(orgId, from, to) as unknown as BotReadingRow[];
+    return rows;
+  }
+
+  /** Per-device round health in the window, for the org — supplies fw/duration/timeout. */
+  listRoundsWindow(orgId: string, from: number, to: number): BotRoundRow[] {
+    const rows = this.db
+      .prepare(
+        `SELECT ro.bracket_at, ro.device_imei, ro.tag_count, ro.duration_seconds,
+                ro.unit_battery_mv, ro.reader_fw, ro.timed_out
+           FROM rounds ro
+           JOIN devices d ON d.imei = ro.device_imei
+          WHERE d.org_id = ? AND ro.bracket_at BETWEEN ? AND ?
+          ORDER BY ro.bracket_at ASC`,
+      )
+      .all(orgId, from, to) as unknown as BotRoundRow[];
+    return rows;
   }
 
   // --- Housekeeping --------------------------------------------------------

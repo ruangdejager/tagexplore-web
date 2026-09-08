@@ -25,6 +25,14 @@ export interface Config {
   settingsApiToken: string;
 
   /**
+   * Shared secret the Telegram bot's manager uses to provision itself: list
+   * organisations and mint/revoke per-bot access tokens, server-to-server
+   * (no browser session). Blank disables the provisioning API entirely, so a
+   * deployment not running the bot exposes nothing extra.
+   */
+  botProvisionToken: string;
+
+  /**
    * How far back a brand-new device is backfilled on first ingest. The API is
    * queried a day at a time to keep any single response small.
    */
@@ -71,6 +79,8 @@ export function loadConfig(): Config {
       '/',
     ),
     settingsApiToken: process.env['SETTINGS_API_TOKEN'] ?? '',
+
+    botProvisionToken: process.env['BOT_PROVISION_TOKEN'] ?? '',
 
     backfillDays: num(process.env['BACKFILL_DAYS'], 7),
     pollLookbackHours: num(process.env['POLL_LOOKBACK_HOURS'], 4),

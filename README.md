@@ -5,15 +5,30 @@ raw syslog from the Farmranger API on that device's own schedule, parses the tag
 discovery rounds out of it, stores every reading, and puts the result on a
 satellite map with battery history behind it.
 
-It is the same data the Telegram tag bot works from, with the parts a chat
-window could not do: pan and zoom over real imagery, click a tag for its full
-metadata, and chart several tags' battery over any date range you choose.
+It is also the source of truth the Telegram tag bot now reads from (see
+*Telegram bot integration* below), with the parts a chat window could not do:
+pan and zoom over real imagery, click a tag for its full metadata, and chart
+several tags' battery over any date range you choose.
 
-## What is different from the bot
+## Telegram bot integration
 
-The bot is stateless — every query re-fetches and re-parses the log. This app
-persists parsed readings, which is what makes an arbitrary battery date range,
-a fix-age colour scale, and per-organisation access possible at all.
+This app is the only place Farmranger logs are scraped and parsed. The Telegram
+tag bot no longer touches the logs at all — it reads one organisation's stored
+data back over two small HTTP surfaces:
+
+- **Read API** — `GET /api/bot/context` (the org, its dev/client level, and its
+  tag whitelist) and `GET /api/bot/readings?from&to` (raw readings + round health
+  in a window, which the bot rebuilds its discovery "sessions" from). Authed by a
+  per-bot **bot access token** as `Authorization: Bearer <token>`; only the
+  token's hash is stored (`bot_tokens` table), and it scopes strictly to one
+  organisation at one level.
+- **Provisioning API** — `GET /api/provision/orgs` and
+  `POST | PATCH | DELETE /api/provision/tokens`, used by the bot's manager to
+  attach a new bot to an organisation and set its level. Server-to-server, authed
+  by a single shared secret `BOT_PROVISION_TOKEN`; **blank disables it entirely**,
+  so a deployment not running the bot exposes nothing extra.
+
+The web app shows nothing about the bot — this is purely a data feed.
 
 ## Access model
 
@@ -160,6 +175,9 @@ manual, per-project step:
      account created on first boot of a fresh database.
    - `SETTINGS_API_TOKEN` if device schedules should self-refresh from the
      Farmranger settings API; the logs API needs no key.
+   - `BOT_PROVISION_TOKEN` — only if the Telegram bot connects here; set the same
+     value on the bot's `WEB_PROVISION_TOKEN`. Leave unset to keep the
+     provisioning API off.
 4. **Deploy**, then confirm `/api/health` returns `{"ok":true}` and login
    works with the founding admin.
 
