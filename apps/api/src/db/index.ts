@@ -307,6 +307,7 @@ export interface BotReadingRow {
   has_gps: number;
   fw_patch: number | null;
   gps_age_s: number | null;
+  link_id: string | null;
 }
 
 /** A raw `rounds` row, snake_case as SQLite returns it. */
@@ -1415,7 +1416,7 @@ export class Store {
     const rows = this.db
       .prepare(
         `SELECT r.bracket_at, r.device_imei, r.tag_id, r.battery_mv, r.rssi, r.hops, r.wave_count,
-                r.movement_state, r.lat, r.lon, r.has_gps, r.fw_patch, r.gps_age_s
+                r.movement_state, r.lat, r.lon, r.has_gps, r.fw_patch, r.gps_age_s, r.link_id
            FROM readings r
            JOIN devices d ON d.imei = r.device_imei
           WHERE d.org_id = ? AND r.bracket_at BETWEEN ? AND ?
