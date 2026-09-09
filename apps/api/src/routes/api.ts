@@ -198,9 +198,25 @@ export function createApi(deps: ApiDeps): Hono<Env> {
     });
   });
 
-  /** The organisation's readers, so the tag card can name the device that heard a tag. */
+  /**
+   * The organisation's readers, so the tag card can name the device that heard
+   * a tag. `at` (epoch ms) swaps each reader's position for wherever it was as
+   * of that time instead of its current one — a past discovery round's own
+   * purple marker, not today's.
+   */
   api.get('/devices', (c) => {
-    const devices = deps.store.listDevices(c.get('orgId'));
+    let devices = deps.store.listDevices(c.get('orgId'));
+
+    const atRaw = c.req.query('at');
+    if (atRaw !== undefined) {
+      const at = Number(atRaw);
+      if (!Number.isFinite(at)) return c.json({ error: '`at` must be epoch milliseconds.' }, 400);
+      devices = devices.map((d) => {
+        const position = deps.store.getDevicePositionAt(d.imei, at);
+        return { ...d, lat: position?.lat ?? null, lon: position?.lon ?? null, gpsUpdatedAt: position?.reportedAt ?? null };
+      });
+    }
+
     // A non-admin has no business seeing ingest error strings; the label, IMEI
     // and whether it is active are enough to make sense of the map.
     if (c.get('user').role === 'admin') return c.json({ devices });

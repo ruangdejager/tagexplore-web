@@ -132,6 +132,17 @@ CREATE TABLE IF NOT EXISTS devices (
 
 CREATE INDEX IF NOT EXISTS devices_org ON devices(org_id);
 
+-- Every reader position ever read off the events API, not just the latest —
+-- lets a past discovery round be shown with the reader where it actually was
+-- at that time, instead of wherever it is now.
+CREATE TABLE IF NOT EXISTS device_positions (
+  device_imei  TEXT NOT NULL REFERENCES devices(imei) ON DELETE CASCADE,
+  lat          REAL NOT NULL,
+  lon          REAL NOT NULL,
+  reported_at  INTEGER NOT NULL,
+  PRIMARY KEY (device_imei, reported_at)
+);
+
 -- The per-organisation tag whitelist. A tag only becomes visible to an
 -- organisation once it is listed here, even though its readings arrive
 -- automatically through whichever of that organisation's devices heard it.
@@ -855,6 +866,24 @@ export class Store {
     this.db
       .prepare('UPDATE devices SET gps_lat = ?, gps_lon = ?, gps_updated_at = ? WHERE imei = ?')
       .run(lat, lon, updatedAt, imei);
+    this.db
+      .prepare(
+        'INSERT INTO device_positions (device_imei, lat, lon, reported_at) VALUES (?, ?, ?, ?) ON CONFLICT (device_imei, reported_at) DO UPDATE SET lat = excluded.lat, lon = excluded.lon',
+      )
+      .run(imei, lat, lon, updatedAt);
+  }
+
+  /**
+   * Where a reader was as of `at` — the newest position reported no later than
+   * that time — or null if it had none yet (too early, or never positioned).
+   */
+  getDevicePositionAt(imei: string, at: number): { lat: number; lon: number; reportedAt: number } | null {
+    const row = this.db
+      .prepare(
+        'SELECT lat, lon, reported_at AS reportedAt FROM device_positions WHERE device_imei = ? AND reported_at <= ? ORDER BY reported_at DESC LIMIT 1',
+      )
+      .get(imei, at) as { lat: number; lon: number; reportedAt: number } | undefined;
+    return row ?? null;
   }
 
   // --- Tag whitelist -------------------------------------------------------

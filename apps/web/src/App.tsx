@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  type DeviceRow,
   type DiscoveryWindow,
   type GeofenceRegion,
   type OrgTagRow,
@@ -101,6 +102,7 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   // inside CountPanel, because it has to reach the map.
   const [historyAt, setHistoryAt] = useState<number | null>(null);
   const [historySnapshots, setHistorySnapshots] = useState<TagSnapshot[] | null>(null);
+  const [historyDevices, setHistoryDevices] = useState<DeviceRow[] | null>(null);
   const [trendTags, setTrendTags] = useState<Set<string>>(new Set());
   // Tucked out of the way by default — the map is the main event, and this is
   // a drawer for when battery history is actually wanted. Owned here (not
@@ -178,6 +180,27 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
       cancelled = true;
     };
   }, [historyAt, orgId, excludeDeviceImeis]);
+
+  // Same idea for the readers themselves — the purple marker for a past round
+  // belongs at wherever that reader actually was then, not its live position.
+  useEffect(() => {
+    if (historyAt === null || !orgId) {
+      setHistoryDevices(null);
+      return;
+    }
+    let cancelled = false;
+    api
+      .fetchDevicesAt(orgId, historyAt)
+      .then((res) => {
+        if (!cancelled) setHistoryDevices(res.devices);
+      })
+      .catch(() => {
+        if (!cancelled) setHistoryDevices([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [historyAt, orgId]);
 
   useEffect(() => {
     if (!isAdmin) {
@@ -303,6 +326,7 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   // the only thing that changes when browsing history; the map's own pan and
   // zoom are never touched by it (see MapView's markers effect).
   const mapSourceSnapshots = historyAt !== null && historySnapshots !== null ? historySnapshots : snapshots;
+  const mapSourceDevices = historyAt !== null && historyDevices !== null ? historyDevices : devices;
   const mapVisible = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return needle
@@ -566,7 +590,7 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
         heatmapView={heatmapView}
         heatPoints={heatPoints}
         linkView={linkView}
-        devices={devices}
+        devices={mapSourceDevices}
         onSelectDevice={selectDevice}
         geofences={geofences}
         geofencesView={geofencesView}

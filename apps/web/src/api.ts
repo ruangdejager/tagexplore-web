@@ -149,6 +149,10 @@ export const fetchOrgTags = (orgId: string | null): Promise<{ tags: OrgTagRow[] 
 export const fetchDevices = (orgId: string | null): Promise<{ devices: DeviceRow[] }> =>
   request(scoped('/api/devices', orgId));
 
+/** Same as `fetchDevices`, but each reader's position is as of `at` rather than live. */
+export const fetchDevicesAt = (orgId: string | null, at: number): Promise<{ devices: DeviceRow[] }> =>
+  request(scoped('/api/devices', orgId, { at }));
+
 export const fetchGeofences = (orgId: string | null): Promise<{ geofences: GeofenceRegion[] }> =>
   request(scoped('/api/geofences', orgId));
 
