@@ -152,6 +152,15 @@ function linkBallIcon(): L.DivIcon {
   });
 }
 
+/** A tag's discovery wave number, pinned beside its position dot in link view. */
+function waveCountIcon(waveCount: number): L.DivIcon {
+  return L.divIcon({
+    className: 'wave-count-wrap',
+    html: `<span class="wave-count">${waveCount}</span>`,
+    iconSize: [0, 0],
+  });
+}
+
 /** `YYYY-MM-DD` for a date input, in Johannesburg time rather than the browser's — same convention as the battery trend's range picker. */
 function toDateInput(ms: number): string {
   return new Date(ms + 2 * 3_600_000).toISOString().slice(0, 10);
@@ -551,6 +560,10 @@ export function MapView({
 
         const ball = L.marker([origin.lat, origin.lon], { icon: linkBallIcon(), interactive: false }).addTo(group);
         linkBalls.current.push({ origin, tag: tagPoint, ball });
+
+        if (tag.waveCount !== null) {
+          L.marker([tagPoint.lat, tagPoint.lon], { icon: waveCountIcon(tag.waveCount), interactive: false }).addTo(group);
+        }
       }
       if (!instance.hasLayer(group)) group.addTo(instance);
     } else if (instance.hasLayer(group)) {

@@ -658,6 +658,29 @@ main {
   box-shadow: 0 0 7px 2px rgba(79, 191, 139, 0.9);
 }
 
+/* A tag's discovery wave number in link view, pinned beside its position dot —
+   same bubble look as the ruler label, offset sideways instead of upward so it
+   doesn't collide with the tag's own hover tooltip above it. */
+.wave-count-wrap {
+  background: transparent;
+  border: none;
+}
+.wave-count {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform: translate(8px, -50%);
+  display: block;
+  background: rgba(27, 30, 23, 0.94);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
 /* Positioned by their wrapper, .map-topleft, not by themselves — that is what
    lets the count panel and the tag card stack in the map's top-left corner. */
 .map-topleft {
