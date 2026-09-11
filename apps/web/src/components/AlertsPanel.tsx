@@ -64,20 +64,22 @@ export function AlertsPanel({ watchedTagIds, snapshots, tags, now, onSelectTag }
         <div className="alerts-list">
           {alerts.map((a) => (
             <div key={a.key} className="alert-row">
-              <span
-                className="alert-tag"
-                role="button"
-                tabIndex={0}
-                onClick={() => onSelectTag(a.tagId)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    onSelectTag(a.tagId);
-                  }
-                }}
-              >
-                {a.tagId}
-                {labelFor.get(a.tagId) && <span className="tag-label"> {labelFor.get(a.tagId)}</span>}
+              <span className="alert-tag-group">
+                <span
+                  className="alert-tag"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => onSelectTag(a.tagId)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onSelectTag(a.tagId);
+                    }
+                  }}
+                >
+                  {a.tagId}
+                  {labelFor.get(a.tagId) && <span className="tag-label"> {labelFor.get(a.tagId)}</span>}
+                </span>
                 {a.hasGpsFix !== undefined && (
                   <span className={`alert-gps-fix ${a.hasGpsFix ? 'alert-gps-fix-yes' : 'alert-gps-fix-no'}`}>
                     {' '}gps fix {a.hasGpsFix ? '✓' : '✗'}
