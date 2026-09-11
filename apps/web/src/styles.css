@@ -1013,6 +1013,11 @@ footer {
   padding: 4px 6px;
   color-scheme: dark;
 }
+/* color-scheme: dark already renders this icon light — the global invert
+   above would flip it straight back to black, so cancel it here. */
+.trend-controls input[type='date']::-webkit-calendar-picker-indicator {
+  filter: none;
+}
 
 .trend-body {
   display: flex;
@@ -1060,6 +1065,17 @@ footer {
   color: var(--alert);
   text-align: right;
   white-space: nowrap;
+}
+.alert-gps-fix {
+  display: block;
+  font-style: italic;
+  font-size: 10px;
+}
+.alert-gps-fix-yes {
+  color: #2e8b3d;
+}
+.alert-gps-fix-no {
+  color: #c13615;
 }
 .trend-toggles {
   width: 210px;

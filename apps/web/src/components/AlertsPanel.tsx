@@ -27,7 +27,7 @@ export function AlertsPanel({ watchedTagIds, snapshots, tags, now, onSelectTag }
 
   const alerts = useMemo(() => {
     const staleCutoff = now - STALE_HOURS * 3_600_000;
-    const rows: Array<{ key: string; tagId: string; message: string }> = [];
+    const rows: Array<{ key: string; tagId: string; message: string; hasGpsFix?: boolean }> = [];
 
     for (const tagId of watchedTagIds) {
       const snap = snapshots.find((s) => s.tagId === tagId);
@@ -36,7 +36,9 @@ export function AlertsPanel({ watchedTagIds, snapshots, tags, now, onSelectTag }
       // a stale one — "still" already explains why it hasn't moved, so "not
       // seen in Xh" would just be a second, redundant alarm for the same tag.
       if (snap.movementState === 1) {
-        rows.push({ key: `${tagId}-still`, tagId, message: 'still' });
+        // fixAt is the latest GPS-carrying reading's bracket; it matches
+        // lastSeenAt only when that latest (still) reading itself had a fix.
+        rows.push({ key: `${tagId}-still`, tagId, message: 'still', hasGpsFix: snap.fixAt === snap.lastSeenAt });
       } else if (snap.lastSeenAt < staleCutoff) {
         rows.push({ key: `${tagId}-stale`, tagId, message: `not seen in ${formatAge(now - snap.lastSeenAt)}` });
       }
@@ -77,7 +79,14 @@ export function AlertsPanel({ watchedTagIds, snapshots, tags, now, onSelectTag }
                 {a.tagId}
                 {labelFor.get(a.tagId) && <span className="tag-label"> {labelFor.get(a.tagId)}</span>}
               </span>
-              <span className="alert-message">{a.message}</span>
+              <span className="alert-message">
+                {a.message}
+                {a.hasGpsFix !== undefined && (
+                  <span className={`alert-gps-fix ${a.hasGpsFix ? 'alert-gps-fix-yes' : 'alert-gps-fix-no'}`}>
+                    gps fix {a.hasGpsFix ? '✓' : '✗'}
+                  </span>
+                )}
+              </span>
             </div>
           ))}
         </div>
