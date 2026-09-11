@@ -9,6 +9,7 @@ import {
   type DiscoveryWindow,
   type GeofenceRegion,
   type GpsPoint,
+  type LinkReading,
   type TagPosition,
   type TagSnapshot,
 } from '@tagexplore/core';
@@ -55,6 +56,10 @@ interface Props {
    *  mutually exclusive with the heatmap (which has no per-tag positions to
    *  connect). */
   linkView: boolean;
+  /** One row per (tag, device) that heard it in the org's single latest
+   *  discovery bracket — unlike `snapshots`, not collapsed to one row per tag,
+   *  so a tag two readers both heard that round draws a line from each. */
+  linkReadings: LinkReading[];
   /** The org's readers — plotted as a standout marker wherever one's own
    *  position is known, and matched against a tag's link id (via `radioId`)
    *  to give a direct-to-base link somewhere to point at. */
@@ -207,6 +212,7 @@ export function MapView({
   gpsWindow,
   historyAt,
   linkView,
+  linkReadings,
   devices,
   onSelectDevice,
   orgId,
@@ -516,7 +522,6 @@ export function MapView({
     linkBalls.current = [];
 
     if (mode === 'global' && linkView && !heatmapView) {
-      const latestIds = checkedInTagIds(snapshots, 'latest', Date.now());
       const byId = new Map(snapshots.map((t) => [t.tagId, t]));
       const deviceByRadioId = new Map(
         devices.filter((d): d is DeviceRow & { radioId: string; lat: number; lon: number } => d.radioId !== null && d.lat !== null && d.lon !== null)
@@ -526,21 +531,27 @@ export function MapView({
         devices.filter((d): d is DeviceRow & { lat: number; lon: number } => d.lat !== null && d.lon !== null).map((d) => [d.imei, d]),
       );
 
-      for (const tag of snapshots) {
-        if (!latestIds.has(tag.tagId) || tag.lat === null || tag.lon === null) continue;
+      // One row per (tag, device) that heard it in the latest round — not
+      // collapsed to one row per tag like `snapshots` — so a tag two readers
+      // both heard that round draws a line from each, not just whichever one
+      // won the tie-break server-side.
+      const waveCountLabeled = new Set<string>();
+      for (const reading of linkReadings) {
+        const tag = byId.get(reading.tagId);
+        if (!tag || tag.lat === null || tag.lon === null) continue;
 
-        const targetTag = tag.linkId ? byId.get(tag.linkId) : undefined;
+        const targetTag = reading.linkId ? byId.get(reading.linkId) : undefined;
         let origin: { lat: number; lon: number } | undefined =
           targetTag && targetTag.lat !== null && targetTag.lon !== null
             ? { lat: targetTag.lat, lon: targetTag.lon }
-            : tag.linkId
-              ? deviceByRadioId.get(tag.linkId)
+            : reading.linkId
+              ? deviceByRadioId.get(reading.linkId)
               : undefined;
         // No relay id at all — including one that disappeared because the
         // device that reported it got excluded — so link straight to
-        // whichever reader's own log actually carries this tag's latest
-        // reading, rather than just dropping the line for it.
-        if (!origin) origin = deviceByImei.get(tag.sourceDeviceImei);
+        // whichever reader's own log actually carries this reading, rather
+        // than just dropping the line for it.
+        if (!origin) origin = deviceByImei.get(reading.sourceDeviceImei);
         if (!origin) continue;
 
         const tagPoint: { lat: number; lon: number } = { lat: tag.lat, lon: tag.lon };
@@ -561,7 +572,8 @@ export function MapView({
         const ball = L.marker([origin.lat, origin.lon], { icon: linkBallIcon(), interactive: false }).addTo(group);
         linkBalls.current.push({ origin, tag: tagPoint, ball });
 
-        if (tag.waveCount !== null) {
+        if (tag.waveCount !== null && !waveCountLabeled.has(tag.tagId)) {
+          waveCountLabeled.add(tag.tagId);
           L.marker([tagPoint.lat, tagPoint.lon], { icon: waveCountIcon(tag.waveCount), interactive: false }).addTo(group);
         }
       }
@@ -599,7 +611,7 @@ export function MapView({
         linkAnimFrame.current = null;
       }
     };
-  }, [mode, linkView, heatmapView, snapshots, devices]);
+  }, [mode, linkView, heatmapView, snapshots, devices, linkReadings]);
 
   // The movement layer is attached only in movement mode — everything about
   // what it draws lives in the effect further down; this just controls

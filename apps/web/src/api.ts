@@ -6,6 +6,7 @@ import type {
   GeofenceRegion,
   GpsPoint,
   IngestRunRow,
+  LinkReading,
   OrgAccessRequestRow,
   OrgTagRow,
   OrganisationRow,
@@ -23,6 +24,7 @@ export type {
   DiscoveryCountPoint,
   GeofenceRegion,
   GpsPoint,
+  LinkReading,
   OrgAccessRequestRow,
   OrgTagRow,
   OrganisationRow,
@@ -90,7 +92,7 @@ export const fetchSnapshots = (
   orgId: string | null,
   hours: number,
   excludeDeviceImeis?: string[],
-): Promise<{ from: number; to: number; snapshots: TagSnapshot[] }> =>
+): Promise<{ from: number; to: number; snapshots: TagSnapshot[]; links: LinkReading[] }> =>
   request(
     scoped('/api/snapshots', orgId, {
       hours,
@@ -109,7 +111,7 @@ export const fetchSnapshotsAt = (
   orgId: string | null,
   at: number,
   excludeDeviceImeis?: string[],
-): Promise<{ from: number; to: number; snapshots: TagSnapshot[] }> =>
+): Promise<{ from: number; to: number; snapshots: TagSnapshot[]; links: LinkReading[] }> =>
   request(
     scoped('/api/snapshots', orgId, {
       to: at,

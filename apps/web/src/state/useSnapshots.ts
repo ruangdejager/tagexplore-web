@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { DeviceRow, TagSnapshot } from '@tagexplore/core';
+import type { DeviceRow, LinkReading, TagSnapshot } from '@tagexplore/core';
 import * as api from '../api.js';
 
 /**
@@ -11,6 +11,7 @@ const REFRESH_MS = 60_000;
 
 export interface SnapshotState {
   snapshots: TagSnapshot[];
+  links: LinkReading[];
   devices: DeviceRow[];
   /** The window the server actually answered for, so the UI can date the view. */
   from: number;
@@ -34,6 +35,7 @@ export function useSnapshots(
   excludeDeviceImeis?: string[],
 ): SnapshotState {
   const [snapshots, setSnapshots] = useState<TagSnapshot[]>([]);
+  const [links, setLinks] = useState<LinkReading[]>([]);
   const [devices, setDevices] = useState<DeviceRow[]>([]);
   const [range, setRange] = useState({ from: 0, to: 0 });
   const [loading, setLoading] = useState(false);
@@ -55,6 +57,7 @@ export function useSnapshots(
   useEffect(() => {
     if (!enabled) {
       setSnapshots([]);
+      setLinks([]);
       setDevices([]);
       return;
     }
@@ -65,6 +68,7 @@ export function useSnapshots(
       .then(([snapshotRes, deviceRes]) => {
         if (cancelled) return;
         setSnapshots(snapshotRes.snapshots);
+        setLinks(snapshotRes.links);
         setDevices(deviceRes.devices);
         setRange({ from: snapshotRes.from, to: snapshotRes.to });
         setError(null);
@@ -90,5 +94,5 @@ export function useSnapshots(
     return () => clearInterval(timer);
   }, [enabled, refresh]);
 
-  return { snapshots, devices, from: range.from, to: range.to, loading, hasLoaded: enabled && loadedOrgId === orgId, error, refresh };
+  return { snapshots, links, devices, from: range.from, to: range.to, loading, hasLoaded: enabled && loadedOrgId === orgId, error, refresh };
 }

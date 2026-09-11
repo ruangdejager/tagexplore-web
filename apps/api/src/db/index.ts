@@ -9,6 +9,7 @@ import type {
   GeofenceRegion,
   GpsPoint,
   IngestRunRow,
+  LinkReading,
   OrgAccessRequestRow,
   OrgTagRow,
   OrganisationRow,
@@ -1234,6 +1235,43 @@ export class Store {
       fixAt: r.fix_at,
       gpsAgeSeconds: r.gps_age_s,
       readingCount: r.reading_count,
+    }));
+  }
+
+  /**
+   * Every device's own reading of every tag in the org's single most recent
+   * discovery bracket — unlike `tagSnapshots`, which keeps only one row per
+   * tag org-wide, this keeps one row per (tag, device) so a tag two readers
+   * both heard that round yields a link line from each, not just one.
+   */
+  linkReadings({ orgId, from, to }: ReadingWindow, excludeDeviceImeis?: string[]): LinkReading[] {
+    const filter = excludeDeviceFilterClause(excludeDeviceImeis, 'r');
+    const rows = this.db
+      .prepare(
+        `WITH scoped AS (
+           SELECT r.* FROM readings r
+             JOIN devices d ON d.imei = r.device_imei
+            WHERE d.org_id = :org AND r.bracket_at BETWEEN :from AND :to
+              AND EXISTS (SELECT 1 FROM org_tags t WHERE t.org_id = :org AND t.tag_id = r.tag_id)
+              ${filter.sql}
+         ),
+         latest_bracket AS (SELECT MAX(bracket_at) AS b FROM scoped)
+         SELECT s.tag_id, s.device_imei AS source_device_imei, s.link_id, s.wave_count
+           FROM scoped s, latest_bracket b
+          WHERE s.bracket_at = b.b`,
+      )
+      .all({ org: orgId, from, to, ...filter.params }) as Array<{
+      tag_id: string;
+      source_device_imei: string;
+      link_id: string | null;
+      wave_count: number | null;
+    }>;
+
+    return rows.map((r) => ({
+      tagId: r.tag_id,
+      sourceDeviceImei: r.source_device_imei,
+      linkId: r.link_id,
+      waveCount: r.wave_count,
     }));
   }
 

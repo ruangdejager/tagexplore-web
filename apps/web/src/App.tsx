@@ -3,6 +3,7 @@ import {
   type DeviceRow,
   type DiscoveryWindow,
   type GeofenceRegion,
+  type LinkReading,
   type OrgTagRow,
   type OrganisationRow,
   type TagSnapshot,
@@ -102,6 +103,7 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   // inside CountPanel, because it has to reach the map.
   const [historyAt, setHistoryAt] = useState<number | null>(null);
   const [historySnapshots, setHistorySnapshots] = useState<TagSnapshot[] | null>(null);
+  const [historyLinks, setHistoryLinks] = useState<LinkReading[] | null>(null);
   const [historyDevices, setHistoryDevices] = useState<DeviceRow[] | null>(null);
   const [trendTags, setTrendTags] = useState<Set<string>>(new Set());
   // Tucked out of the way by default — the map is the main event, and this is
@@ -139,7 +141,7 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   // Tags are never time-filtered — every whitelisted tag always shows its
   // latest known state, so the fetch window here is just a generous ceiling,
   // not a user-facing setting. The heatmap gets its own window below.
-  const { snapshots, devices, loading, hasLoaded, error, refresh } = useSnapshots(
+  const { snapshots, links, devices, loading, hasLoaded, error, refresh } = useSnapshots(
     orgId,
     SNAPSHOT_WINDOW_HOURS,
     canSeeData,
@@ -165,16 +167,23 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   useEffect(() => {
     if (historyAt === null || !orgId) {
       setHistorySnapshots(null);
+      setHistoryLinks(null);
       return;
     }
     let cancelled = false;
     api
       .fetchSnapshotsAt(orgId, historyAt, excludeDeviceImeis)
       .then((res) => {
-        if (!cancelled) setHistorySnapshots(res.snapshots);
+        if (!cancelled) {
+          setHistorySnapshots(res.snapshots);
+          setHistoryLinks(res.links);
+        }
       })
       .catch(() => {
-        if (!cancelled) setHistorySnapshots([]);
+        if (!cancelled) {
+          setHistorySnapshots([]);
+          setHistoryLinks([]);
+        }
       });
     return () => {
       cancelled = true;
@@ -326,7 +335,14 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   // the only thing that changes when browsing history; the map's own pan and
   // zoom are never touched by it (see MapView's markers effect).
   const mapSourceSnapshots = historyAt !== null && historySnapshots !== null ? historySnapshots : snapshots;
-  const mapSourceDevices = historyAt !== null && historyDevices !== null ? historyDevices : devices;
+  const mapSourceLinks = historyAt !== null && historyLinks !== null ? historyLinks : links;
+  // Devices come back unfiltered (the list shows every reader dimmed, not
+  // hidden) — the map, unlike the list, has to actually drop the marker for
+  // one switched off, same as it drops that reader's tags.
+  const mapSourceDevices = useMemo(
+    () => (historyAt !== null && historyDevices !== null ? historyDevices : devices).filter((d) => !hiddenDeviceImeis.has(d.imei)),
+    [historyAt, historyDevices, devices, hiddenDeviceImeis],
+  );
   const mapVisible = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return needle
@@ -590,6 +606,7 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
         heatmapView={heatmapView}
         heatPoints={heatPoints}
         linkView={linkView}
+        linkReadings={mapSourceLinks}
         devices={mapSourceDevices}
         onSelectDevice={selectDevice}
         geofences={geofences}

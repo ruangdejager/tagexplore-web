@@ -121,10 +121,12 @@ export function createApi(deps: ApiDeps): Hono<Env> {
     const window = readWindow(c.req.query(), Date.now());
     if ('error' in window) return c.json({ error: window.error }, 400);
 
+    const excludeDeviceImeis = parseExcludeDeviceImeis(c.req.query());
     return c.json({
       from: window.from,
       to: window.to,
-      snapshots: deps.store.tagSnapshots({ orgId: c.get('orgId'), ...window }, parseExcludeDeviceImeis(c.req.query())),
+      snapshots: deps.store.tagSnapshots({ orgId: c.get('orgId'), ...window }, excludeDeviceImeis),
+      links: deps.store.linkReadings({ orgId: c.get('orgId'), ...window }, excludeDeviceImeis),
     });
   });
 

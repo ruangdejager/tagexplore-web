@@ -169,6 +169,19 @@ export interface TagSnapshot {
   readingCount: number;
 }
 
+/**
+ * One device's raw reading of one tag in the org's single most recent
+ * discovery bracket — unlike `TagSnapshot`, which collapses a tag down to one
+ * row org-wide, this keeps every reader that heard the tag that round, so a
+ * tag overlapping two readers' range gets a link line drawn from each.
+ */
+export interface LinkReading {
+  tagId: string;
+  sourceDeviceImei: string;
+  linkId: string | null;
+  waveCount: number | null;
+}
+
 export interface BatteryPoint {
   t: number;
   mv: number;
