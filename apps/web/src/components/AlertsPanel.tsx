@@ -78,15 +78,13 @@ export function AlertsPanel({ watchedTagIds, snapshots, tags, now, onSelectTag }
               >
                 {a.tagId}
                 {labelFor.get(a.tagId) && <span className="tag-label"> {labelFor.get(a.tagId)}</span>}
-              </span>
-              <span className="alert-message">
-                {a.message}
                 {a.hasGpsFix !== undefined && (
                   <span className={`alert-gps-fix ${a.hasGpsFix ? 'alert-gps-fix-yes' : 'alert-gps-fix-no'}`}>
-                    gps fix {a.hasGpsFix ? '✓' : '✗'}
+                    {' '}gps fix {a.hasGpsFix ? '✓' : '✗'}
                   </span>
                 )}
               </span>
+              <span className="alert-message">{a.message}</span>
             </div>
           ))}
         </div>

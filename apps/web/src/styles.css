@@ -1067,9 +1067,9 @@ footer {
   white-space: nowrap;
 }
 .alert-gps-fix {
-  display: block;
   font-style: italic;
   font-size: 10px;
+  white-space: nowrap;
 }
 .alert-gps-fix-yes {
   color: #2e8b3d;
