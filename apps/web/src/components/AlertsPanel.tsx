@@ -82,7 +82,7 @@ export function AlertsPanel({ watchedTagIds, snapshots, tags, now, onSelectTag }
                 </span>
                 {a.hasGpsFix !== undefined && (
                   <span className={`alert-gps-fix ${a.hasGpsFix ? 'alert-gps-fix-yes' : 'alert-gps-fix-no'}`}>
-                    {' '}gps fix {a.hasGpsFix ? '✓' : '✗'}
+                    gps fix {a.hasGpsFix ? '✓' : '✗'}
                   </span>
                 )}
               </span>

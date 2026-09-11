@@ -1055,6 +1055,7 @@ footer {
 .alert-tag-group {
   display: flex;
   align-items: baseline;
+  gap: 8px;
   min-width: 0;
 }
 .alert-tag {
