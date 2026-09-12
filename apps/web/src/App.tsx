@@ -384,7 +384,8 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   );
 
   const selected = visible.find((t) => t.tagId === selectedTagId) ?? null;
-  const selectedDevice = devices.find((d) => d.imei === selectedDeviceImei) ?? null;
+  const selectedDeviceSource = historyAt !== null && historyDevices !== null ? historyDevices : devices;
+  const selectedDevice = selectedDeviceSource.find((d) => d.imei === selectedDeviceImei) ?? null;
 
   const toggleMapVisibility = useCallback((tagId: string): void => {
     setHiddenFromMap((prev) => {
@@ -638,7 +639,7 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
             now={now}
             onSelectTag={selectTag}
           />
-          {selectedDevice && <DeviceCard device={selectedDevice} now={now} onClose={() => setSelectedDeviceImei(null)} />}
+          {selectedDevice && <DeviceCard device={selectedDevice} now={historyAt ?? now} onClose={() => setSelectedDeviceImei(null)} />}
           {selected && (
             <TagCard
               tag={selected}
