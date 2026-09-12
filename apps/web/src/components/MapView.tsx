@@ -572,9 +572,9 @@ export function MapView({
         const ball = L.marker([origin.lat, origin.lon], { icon: linkBallIcon(), interactive: false }).addTo(group);
         linkBalls.current.push({ origin, tag: tagPoint, ball });
 
-        if (tag.waveCount !== null && !waveCountLabeled.has(tag.tagId)) {
+        if (reading.waveCount !== null && !waveCountLabeled.has(tag.tagId)) {
           waveCountLabeled.add(tag.tagId);
-          L.marker([tagPoint.lat, tagPoint.lon], { icon: waveCountIcon(tag.waveCount), interactive: false }).addTo(group);
+          L.marker([tagPoint.lat, tagPoint.lon], { icon: waveCountIcon(reading.waveCount), interactive: false }).addTo(group);
         }
       }
       if (!instance.hasLayer(group)) group.addTo(instance);
