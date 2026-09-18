@@ -15,6 +15,7 @@ import { createAdminApi } from './routes/admin.js';
 import { createApi } from './routes/api.js';
 import { createAuthApi } from './routes/auth.js';
 import { createBotApi, createProvisionApi } from './routes/bot.js';
+import { createTagDiscoveryApi } from './routes/tagDiscovery.js';
 
 const config = loadConfig();
 const store = new Store(config.dbPath, config.foundingAdminUsername);
@@ -48,6 +49,12 @@ app.route('/api/admin', createAdminApi({ store, config }));
 // before the catch-all `/api` so their paths aren't shadowed by it.
 app.route('/api/bot', createBotApi({ store }));
 app.route('/api/provision', createProvisionApi({ store, config }));
+// Push ingest: a FarmRanger unit POSTs a CBOR tag-discovery campaign to
+// /api/v2018-02-04/units/<imei>/tagdiscovery. Registered here for the same
+// reason as the two above — the catch-all `/api` below would shadow the path.
+// Unauthenticated by necessity: the firmware's POST path sends no headers at
+// all, so the IMEI in the path is the only identification there is.
+app.route('/api/v2018-02-04/units', createTagDiscoveryApi({ store, config }));
 app.route('/api', createApi({ store, config }));
 
 // --- Static hosting -------------------------------------------------------

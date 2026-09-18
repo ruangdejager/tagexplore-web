@@ -44,3 +44,18 @@ export function parseTagIdList(input: string | string[] | null | undefined): Tag
 export function shortDeviceId(imei: string): string {
   return String(imei).slice(-3);
 }
+
+/**
+ * Renders a LoRa device id the way the firmware's own `%X` log output does —
+ * uppercase hex, unpadded, no `0x` prefix — so an id that arrives as an
+ * integer (the push-ingest endpoint sends CBOR unsigned integers, not text)
+ * lands on exactly the same string the log-scraping path already stores for
+ * that tag. `43981` → `ABCD`, `15902` → `3E1E`.
+ *
+ * Returns null for anything that is not a uint32, since there is no sensible
+ * tag id to render for it.
+ */
+export function formatTagId(value: number): string | null {
+  if (!Number.isInteger(value) || value < 0 || value > 0xff_ff_ff_ff) return null;
+  return value.toString(16).toUpperCase();
+}

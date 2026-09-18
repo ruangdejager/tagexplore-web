@@ -209,6 +209,28 @@ CREATE TABLE IF NOT EXISTS rounds (
   PRIMARY KEY (bracket_at, device_imei)
 );
 
+-- One row per tag-discovery campaign pushed to us over the CBOR endpoint, as
+-- opposed to scraped out of a syslog. This exists purely to dedupe: when our
+-- 200 is lost on the way back the unit retries and posts the identical
+-- campaign again, so the natural key it can be recognised by is which unit
+-- reported it, which primary tag ran the campaign, and the session clock it
+-- was stamped with. The readings themselves go into the readings table beside the
+-- scraped ones — this is a receipt, not a second copy of the data.
+CREATE TABLE IF NOT EXISTS tag_discovery_posts (
+  device_imei        TEXT NOT NULL,
+  primary_device_id  INTEGER NOT NULL,
+  session_utc        INTEGER NOT NULL,
+  received_at        INTEGER NOT NULL,
+  bracket_at         INTEGER NOT NULL,
+  mode               INTEGER NOT NULL,
+  primary_version    INTEGER NOT NULL,
+  record_count       INTEGER NOT NULL,
+  byte_count         INTEGER NOT NULL,
+  PRIMARY KEY (device_imei, primary_device_id, session_utc)
+);
+
+CREATE INDEX IF NOT EXISTS tag_discovery_posts_received ON tag_discovery_posts(received_at DESC);
+
 CREATE TABLE IF NOT EXISTS ingest_runs (
   id               INTEGER PRIMARY KEY AUTOINCREMENT,
   device_imei      TEXT NOT NULL,
@@ -302,6 +324,33 @@ export interface ReadingWindow {
   orgId: string;
   from: number;
   to: number;
+}
+
+/** One campaign pushed over the CBOR endpoint, ready to be written. */
+export interface TagDiscoveryPostInput {
+  deviceImei: string;
+  primaryDeviceId: number;
+  sessionUtc: number;
+  receivedAt: number;
+  bracketAt: number;
+  mode: number;
+  primaryVersion: number;
+  byteCount: number;
+  readings: ReadingInput[];
+  round: RoundInput;
+}
+
+/** A stored receipt for one pushed campaign. */
+export interface TagDiscoveryPostRow {
+  deviceImei: string;
+  primaryDeviceId: number;
+  sessionUtc: number;
+  receivedAt: number;
+  bracketAt: number;
+  mode: number;
+  primaryVersion: number;
+  recordCount: number;
+  byteCount: number;
 }
 
 /** A raw `readings` row, snake_case as SQLite returns it — what the bot API ships. */
@@ -1070,6 +1119,117 @@ export class Store {
       throw err;
     }
     return readings.length;
+  }
+
+  /**
+   * Writes one pushed tag-discovery campaign — receipt, readings and round —
+   * in a single transaction.
+   *
+   * The receipt row goes in first and its `ON CONFLICT DO NOTHING` is the
+   * dedupe: the unit retries a failed POST once inside the same session, so if
+   * our 200 was lost on the way back the identical campaign arrives again and
+   * the second one has nothing to do.
+   *
+   * The round is `INSERT OR IGNORE`, not `INSERT OR REPLACE` like
+   * `writeReadings` — deliberately. The same round also arrives by the
+   * log-scraping path, which knows things this one cannot (the reader's own
+   * supply voltage, how long the round took), so a scraped row must never be
+   * overwritten with this path's nulls. If the push lands first the scrape's
+   * later `INSERT OR REPLACE` upgrades the row, which is the direction we want.
+   */
+  writeTagDiscoveryPost(input: TagDiscoveryPostInput): { duplicate: boolean; readingsWritten: number } {
+    const postStmt = this.db.prepare(
+      `INSERT INTO tag_discovery_posts
+       (device_imei, primary_device_id, session_utc, received_at, bracket_at, mode, primary_version, record_count, byte_count)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (device_imei, primary_device_id, session_utc) DO NOTHING`,
+    );
+    const readingStmt = this.db.prepare(
+      `INSERT OR REPLACE INTO readings
+       (bracket_at, device_imei, tag_id, battery_mv, rssi, hops, wave_count, movement_state, lat, lon, has_gps, fw_patch, gps_age_s, link_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const roundStmt = this.db.prepare(
+      `INSERT OR IGNORE INTO rounds
+       (bracket_at, device_imei, tag_count, duration_seconds, unit_battery_mv, reader_fw, timed_out)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    );
+
+    this.db.exec('BEGIN');
+    try {
+      const inserted = postStmt.run(
+        input.deviceImei,
+        input.primaryDeviceId,
+        input.sessionUtc,
+        input.receivedAt,
+        input.bracketAt,
+        input.mode,
+        input.primaryVersion,
+        input.readings.length,
+        input.byteCount,
+      );
+      if (Number(inserted.changes) === 0) {
+        this.db.exec('COMMIT');
+        return { duplicate: true, readingsWritten: 0 };
+      }
+
+      for (const r of input.readings) {
+        readingStmt.run(
+          r.bracketAt,
+          r.deviceImei,
+          r.tagId,
+          r.batteryMv,
+          r.rssi,
+          r.hops,
+          r.waveCount,
+          r.movementState,
+          r.lat,
+          r.lon,
+          r.hasGps ? 1 : 0,
+          r.fwPatch,
+          r.gpsAgeSeconds,
+          r.linkId,
+        );
+      }
+      const round = input.round;
+      roundStmt.run(
+        round.bracketAt,
+        round.deviceImei,
+        round.tagCount,
+        round.durationSeconds,
+        round.unitBatteryMv,
+        round.readerFw,
+        round.timedOut ? 1 : 0,
+      );
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+    return { duplicate: false, readingsWritten: input.readings.length };
+  }
+
+  /** Receipts for one device's pushed campaigns, newest first — an admin/debug view. */
+  listTagDiscoveryPosts(imei?: string, limit = 50): TagDiscoveryPostRow[] {
+    const sql =
+      `SELECT device_imei, primary_device_id, session_utc, received_at, bracket_at, mode,
+              primary_version, record_count, byte_count
+         FROM tag_discovery_posts` +
+      (imei ? ' WHERE device_imei = ?' : '') +
+      ' ORDER BY received_at DESC LIMIT ?';
+    const stmt = this.db.prepare(sql);
+    const rows = (imei ? stmt.all(imei, limit) : stmt.all(limit)) as Array<Record<string, number | string>>;
+    return rows.map((r) => ({
+      deviceImei: String(r['device_imei']),
+      primaryDeviceId: Number(r['primary_device_id']),
+      sessionUtc: Number(r['session_utc']),
+      receivedAt: Number(r['received_at']),
+      bracketAt: Number(r['bracket_at']),
+      mode: Number(r['mode']),
+      primaryVersion: Number(r['primary_version']),
+      recordCount: Number(r['record_count']),
+      byteCount: Number(r['byte_count']),
+    }));
   }
 
   /**

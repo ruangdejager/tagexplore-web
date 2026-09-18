@@ -5,6 +5,11 @@ const num = (value: string | undefined, fallback: number): number => {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 };
 
+const bool = (value: string | undefined, fallback: boolean): boolean => {
+  if (value === undefined || value === '') return fallback;
+  return !/^(0|false|no|off)$/i.test(value.trim());
+};
+
 export interface Config {
   port: number;
   dataDir: string;
@@ -48,6 +53,16 @@ export interface Config {
   pollLookbackHours: number;
   /** Discovery timestamps round to the nearest bracket of this many minutes. */
   bracketMinutes: number;
+
+  /**
+   * Logs every push-ingest POST with its IMEI, byte count and full raw body
+   * hex. On by default for the first field round of the CBOR endpoint: the
+   * same campaign also arrives by the log-scraping path, and diffing our
+   * received bytes against the unit's own debug log (which prints the encoded
+   * length and record count) is how a disagreement gets attributed. Set
+   * TAG_DISCOVERY_DEBUG=0 once that stops being worth the log volume.
+   */
+  tagDiscoveryDebug: boolean;
   /**
    * The account that is force-promoted to admin on every boot — and, if it
    * doesn't exist yet (a fresh database, e.g. a new Railway deploy), created
@@ -85,6 +100,7 @@ export function loadConfig(): Config {
     backfillDays: num(process.env['BACKFILL_DAYS'], 7),
     pollLookbackHours: num(process.env['POLL_LOOKBACK_HOURS'], 4),
     bracketMinutes: num(process.env['BRACKET_MINUTES'], 15),
+    tagDiscoveryDebug: bool(process.env['TAG_DISCOVERY_DEBUG'], true),
     foundingAdminUsername: process.env['FOUNDING_ADMIN_USERNAME'] ?? 'ruandj',
     foundingAdminPassword: process.env['FOUNDING_ADMIN_PASSWORD'] ?? 'Rdj@5046',
   };
