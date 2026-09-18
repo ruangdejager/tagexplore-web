@@ -17,12 +17,20 @@
  *                               the campaign — not when the campaign was captured
  *   4: mode             uint    0 = advanced, 1 = basic
  *   5: records          array   positional arrays, 0..64 (advanced) / 0..32 (basic)
+ *   6: durationS        uint    seconds, the unit's own measurement of how long
+ *                               the discovery campaign took; 0 = not measured
+ *                               (always 0 on a basic-mode campaign — see below)
  *
  * Every value is an unsigned integer, a negative integer, an array or the map
  * itself: no tags, no floats, no text strings, no indefinite lengths. The
  * firmware always picks the narrowest encoding for each value, so a field
  * arrives 1, 2, 3 or 5 bytes wide depending on its magnitude — which is why
  * this decodes with a real CBOR library rather than fixed offsets.
+ *
+ * Key 6 (durationS) postdates keys 1-5: a unit on older firmware simply omits
+ * it, and that is treated as "not measured" rather than an error — the same
+ * way an old primary reports `primaryVersion: 0`. Any future key is meant to
+ * be additive like this one; an unrecognised key is ignored, never rejected.
  */
 
 import { decode } from 'cbor2';
@@ -62,6 +70,15 @@ export interface TagDiscoveryCampaign {
   /** Unix seconds, unvalidated — see `bracketForSession`. */
   sessionUtc: number;
   mode: typeof MODE_ADVANCED | typeof MODE_BASIC;
+  /**
+   * The unit's own measurement of how long the campaign took, in seconds.
+   * `null` when absent (older firmware) or reported as 0 ("not measured" —
+   * always true for a basic-mode campaign; see the module doc). Distinct from
+   * `rounds.duration_seconds` on the scraped path, which instead measures
+   * bracket-to-first-good-block across every device in the round — this is
+   * the actual on-air campaign time, reported directly instead of inferred.
+   */
+  durationSeconds: number | null;
   tags: TagReading[];
   /** Records that decoded but could not be mapped (unusable id, wrong item count). */
   skippedRecords: number;
@@ -199,6 +216,10 @@ export function decodeTagDiscovery(body: Uint8Array): DecodeResult {
   const sessionUtc = readInt(decoded, 3);
   const mode = readInt(decoded, 4);
   const records = decoded.get(5);
+  // Optional and postdates keys 1-5 — see the module doc. 0 is the firmware's
+  // own "not measured" value, same convention as primaryVersion.
+  const rawDurationSeconds = readInt(decoded, 6);
+  const durationSeconds = rawDurationSeconds !== null && rawDurationSeconds > 0 ? rawDurationSeconds : null;
 
   if (primaryDeviceId === null) return { ok: false, error: 'Key 1 (primaryDeviceId) missing or not an integer.' };
   if (primaryVersion === null) return { ok: false, error: 'Key 2 (primaryVersion) missing or not an integer.' };
@@ -235,6 +256,7 @@ export function decodeTagDiscovery(body: Uint8Array): DecodeResult {
       primaryVersion,
       sessionUtc,
       mode,
+      durationSeconds,
       tags,
       skippedRecords,
     },
@@ -326,10 +348,15 @@ export function storeTagDiscovery(
       bracketAt,
       deviceImei: imei,
       tagCount: readings.length,
-      // Neither is reported over this endpoint: the round's duration is
-      // measured from log line timings, and the unit's own supply voltage is
-      // printed on the log's time marks. Both stay the scraped path's to fill.
-      durationSeconds: null,
+      // The unit's own campaign timer, when it reported one — see
+      // TagDiscoveryCampaign.durationSeconds. Left null (same as before this
+      // field existed) on older firmware or a basic-mode campaign, in which
+      // case the scraped path's own bracket-to-first-block estimate is what
+      // eventually fills it, if that round arrives here first (INSERT OR
+      // IGNORE below never lets this path overwrite that estimate either way).
+      durationSeconds: campaign.durationSeconds,
+      // Not reported over this endpoint: the unit's own supply voltage is
+      // printed on the log's time marks, which this path has no equivalent of.
       unitBatteryMv: null,
       readerFw: formatPrimaryVersion(campaign.primaryVersion),
       timedOut: false,

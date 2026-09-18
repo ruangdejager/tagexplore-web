@@ -1132,10 +1132,21 @@ export class Store {
    *
    * The round is `INSERT OR IGNORE`, not `INSERT OR REPLACE` like
    * `writeReadings` — deliberately. The same round also arrives by the
-   * log-scraping path, which knows things this one cannot (the reader's own
-   * supply voltage, how long the round took), so a scraped row must never be
-   * overwritten with this path's nulls. If the push lands first the scrape's
-   * later `INSERT OR REPLACE` upgrades the row, which is the direction we want.
+   * log-scraping path, which knows the reader's own supply voltage — this
+   * path never does — so a scraped row must never be overwritten with this
+   * path's null there.
+   *
+   * `duration_seconds` is a wrinkle: this path can now carry the unit's own
+   * on-air campaign timer (real, precise, direct from the firmware — see
+   * `TagDiscoveryCampaign.durationSeconds`), while the scraped path only ever
+   * had a rougher proxy for the same idea (bracket-to-first-good-block across
+   * every device in the round). If the push writes first with a real number
+   * and the scrape then arrives second, its `INSERT OR REPLACE` still
+   * overwrites it with the coarser estimate — a regression for that one
+   * column, accepted for now rather than special-cased, because sorting out
+   * which of two different measurements of "how long did this take" should
+   * win is a bigger decision than belongs in a storage method. Diffing the
+   * two, while both are live, is exactly how that decision should get made.
    */
   writeTagDiscoveryPost(input: TagDiscoveryPostInput): { duplicate: boolean; readingsWritten: number } {
     const postStmt = this.db.prepare(

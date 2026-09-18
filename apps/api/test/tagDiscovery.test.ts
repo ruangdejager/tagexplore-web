@@ -213,6 +213,26 @@ describe('decodeTagDiscovery', () => {
     const result = decodeTagDiscovery(buildAdvanced(Array.from({ length: 65 }, () => record)));
     expect(result).toEqual({ ok: false, error: expect.stringContaining('65') });
   });
+
+  it('reads key 6 (durationS) when the firmware sends it', () => {
+    const result = decodeTagDiscovery(buildAdvanced([], 47));
+    expect(result.ok && result.campaign.durationSeconds).toBe(47);
+  });
+
+  it('treats a missing key 6 as null, not an error — older firmware omits it', () => {
+    // All three captured fixtures predate key 6.
+    const fixture = decodeTagDiscovery(bytes(ADVANCED_TWO_RECORDS));
+    expect(fixture.ok && fixture.campaign.durationSeconds).toBeNull();
+    const decoded = decodeTagDiscovery(buildAdvanced([]));
+    expect(decoded.ok && decoded.campaign.durationSeconds).toBeNull();
+  });
+
+  it('treats durationS 0 as "not measured", the firmware\'s own convention', () => {
+    // Always 0 on a basic-mode campaign; also possible on advanced if the
+    // primary genuinely has nothing to report yet.
+    const result = decodeTagDiscovery(buildAdvanced([], 0));
+    expect(result.ok && result.campaign.durationSeconds).toBeNull();
+  });
 });
 
 describe('formatPrimaryVersion', () => {
@@ -293,11 +313,30 @@ describe('storeTagDiscovery', () => {
     expect(storeTagDiscovery(store, config, IMEI, campaign, NOW_MS, 21).outcome).toBe('bad-clock');
   });
 
+  it('writes the campaign-reported duration onto a fresh round', () => {
+    const campaign = decodeTagDiscovery(buildAdvanced([[0xabcd, 1, 1, -80, 4000, 1, 0, 0, 1, 0, 0]], 52));
+    if (!campaign.ok) throw new Error(campaign.error);
+
+    const result = storeTagDiscovery(store, config, IMEI, campaign.campaign, NOW_MS, 65);
+    const bracketAt = result.bracketAt as number;
+    const rounds = store.listRoundsWindow(ORG, bracketAt - 1, bracketAt + 1);
+    expect(rounds[0]).toMatchObject({ duration_seconds: 52 });
+  });
+
+  it('leaves duration null on a fresh round when the firmware sent none', () => {
+    const result = storeTagDiscovery(store, config, IMEI, decoded(EMPTY_CAMPAIGN), NOW_MS, 21);
+    const bracketAt = result.bracketAt as number;
+    const rounds = store.listRoundsWindow(ORG, bracketAt - 1, bracketAt + 1);
+    expect(rounds[0]).toMatchObject({ duration_seconds: null });
+  });
+
   it('never overwrites a round the log-scraping path already wrote', () => {
+    // ADVANCED_TWO_RECORDS predates key 6, so this campaign has nothing of its
+    // own to report here — the point of this test is INSERT OR IGNORE, not a
+    // duration comparison (see storeTagDiscovery.durationSeconds's own tests
+    // for when the campaign does carry one).
     const campaign = decoded(ADVANCED_TWO_RECORDS);
     const bracketAt = bracketForSession(campaign.sessionUtc, NOW_MS, config.bracketMinutes) as number;
-    // The scraped path knows the round's duration and the unit's own supply
-    // voltage; this one cannot, and must not blank them.
     store.writeReadings([], [
       {
         bracketAt,
@@ -440,9 +479,10 @@ function int(value: number): number[] {
   return value >= 0 ? head(UINT, value) : head(NEG, -(value + 1));
 }
 
-function buildAdvanced(records: number[][]): Uint8Array {
+/** `durationS` omitted (the default) matches firmware that predates key 6. */
+function buildAdvanced(records: number[][], durationS?: number): Uint8Array {
   const out: number[] = [
-    ...head(MAP, 5),
+    ...head(MAP, durationS === undefined ? 5 : 6),
     ...int(1),
     ...int(PRIMARY_DEVICE_ID),
     ...int(2),
@@ -458,5 +498,6 @@ function buildAdvanced(records: number[][]): Uint8Array {
     out.push(...head(ARR, record.length));
     for (const value of record) out.push(...int(value));
   }
+  if (durationS !== undefined) out.push(...int(6), ...int(durationS));
   return new Uint8Array(out);
 }
