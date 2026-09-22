@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig, type Config } from '../src/config.js';
-import { Store } from '../src/db/index.js';
+import { Store, type RoundInput } from '../src/db/index.js';
 import { bracketForSession, decodeTagDiscovery, formatPrimaryVersion, storeTagDiscovery } from '../src/ingest/tagDiscovery.js';
 import { createTagDiscoveryApi } from '../src/routes/tagDiscovery.js';
 
@@ -262,6 +262,22 @@ describe('bracketForSession', () => {
 });
 
 describe('storeTagDiscovery', () => {
+  /** What the log-scraping path would have written for the same round. */
+  function scrapedRound(bracketAt: number, partial: Partial<RoundInput>): RoundInput {
+    return {
+      bracketAt,
+      deviceImei: IMEI,
+      tagCount: 2,
+      durationSeconds: null,
+      unitBatteryMv: null,
+      readerFw: 'v2.4.0',
+      timedOut: false,
+      source: 'log',
+      receivedAt: null,
+      ...partial,
+    };
+  }
+
   function decoded(hex: string) {
     const result = decodeTagDiscovery(bytes(hex));
     if (!result.ok) throw new Error(result.error);
@@ -330,30 +346,76 @@ describe('storeTagDiscovery', () => {
     expect(rounds[0]).toMatchObject({ duration_seconds: null });
   });
 
-  it('never overwrites a round the log-scraping path already wrote', () => {
-    // ADVANCED_TWO_RECORDS predates key 6, so this campaign has nothing of its
-    // own to report here — the point of this test is INSERT OR IGNORE, not a
-    // duration comparison (see storeTagDiscovery.durationSeconds's own tests
-    // for when the campaign does carry one).
-    const campaign = decoded(ADVANCED_TWO_RECORDS);
-    const bracketAt = bracketForSession(campaign.sessionUtc, NOW_MS, config.bracketMinutes) as number;
-    store.writeReadings([], [
-      {
-        bracketAt,
-        deviceImei: IMEI,
-        tagCount: 2,
-        durationSeconds: 47,
-        unitBatteryMv: 4019,
-        readerFw: 'v2.4.0',
-        timedOut: false,
-      },
-    ]);
+  it('takes precedence over a round the log-scraping path already wrote', () => {
+    const campaign = decodeTagDiscovery(buildAdvanced([[0xabcd, 1, 1, -80, 4000, 1, 0, 0, 1, 0, 0]], 52));
+    if (!campaign.ok) throw new Error(campaign.error);
+    const bracketAt = bracketForSession(campaign.campaign.sessionUtc, NOW_MS, config.bracketMinutes) as number;
 
-    storeTagDiscovery(store, config, IMEI, campaign, NOW_MS, 65);
+    // The scrape got there first with its inferred 47s.
+    store.writeReadings([], [scrapedRound(bracketAt, { durationSeconds: 47, unitBatteryMv: 4019 })]);
+
+    storeTagDiscovery(store, config, IMEI, campaign.campaign, NOW_MS, 65);
 
     const rounds = store.listRoundsWindow(ORG, bracketAt - 1, bracketAt + 1);
     expect(rounds).toHaveLength(1);
-    expect(rounds[0]).toMatchObject({ duration_seconds: 47, unit_battery_mv: 4019 });
+    // The firmware's own on-air 52s wins over the scrape's estimate, and the
+    // round is now stamped with when it actually reached us...
+    expect(rounds[0]).toMatchObject({ duration_seconds: 52, source: 'cbor', received_at: NOW_MS });
+    // ...but the supply voltage, which only the log ever carries, is kept.
+    expect(rounds[0]).toMatchObject({ unit_battery_mv: 4019 });
+  });
+
+  it('is not written back over by a later log scrape of the same round', () => {
+    const campaign = decodeTagDiscovery(buildAdvanced([[0xabcd, 1, 1, -80, 4000, 1, 0, 0, 1, 0, 0]], 52));
+    if (!campaign.ok) throw new Error(campaign.error);
+
+    const result = storeTagDiscovery(store, config, IMEI, campaign.campaign, NOW_MS, 65);
+    const bracketAt = result.bracketAt as number;
+
+    // The same campaign comes round again by the slower route, carrying the
+    // coarser duration and the one thing the push could not: supply voltage.
+    store.writeReadings(
+      [
+        {
+          bracketAt,
+          deviceImei: IMEI,
+          tagId: 'ABCD',
+          batteryMv: 3111,
+          rssi: -99,
+          hops: 9,
+          waveCount: 9,
+          movementState: 0,
+          lat: null,
+          lon: null,
+          hasGps: false,
+          fwPatch: 1,
+          gpsAgeSeconds: null,
+          linkId: null,
+          source: 'log',
+        },
+      ],
+      [scrapedRound(bracketAt, { durationSeconds: 47, unitBatteryMv: 4019 })],
+    );
+
+    const rounds = store.listRoundsWindow(ORG, bracketAt - 1, bracketAt + 1);
+    expect(rounds[0]).toMatchObject({ duration_seconds: 52, source: 'cbor', received_at: NOW_MS });
+    expect(rounds[0]).toMatchObject({ unit_battery_mv: 4019 });
+
+    // Down to the reading row: the scrape's values do not land on top of the
+    // pushed ones either.
+    const abcd = store.listReadingsWindow(ORG, bracketAt - 1, bracketAt + 1).find((r) => r.tag_id === 'ABCD');
+    expect(abcd).toMatchObject({ battery_mv: 4000, rssi: -80, source: 'cbor' });
+  });
+
+  it('stamps the round with the exact time the POST arrived, not just its bracket', () => {
+    const result = storeTagDiscovery(store, config, IMEI, decoded(ADVANCED_TWO_RECORDS), NOW_MS, 65);
+    const bracketAt = result.bracketAt as number;
+
+    const rounds = store.listRoundsWindow(ORG, bracketAt - 1, bracketAt + 1);
+    expect(rounds[0]).toMatchObject({ source: 'cbor', received_at: NOW_MS });
+    // The bracket is still the key both paths meet on — the arrival time rides
+    // alongside it rather than replacing it.
+    expect(NOW_MS).not.toBe(bracketAt);
   });
 
   it('lands a pushed reading on the row the scraped path already made for that tag', () => {
@@ -376,6 +438,7 @@ describe('storeTagDiscovery', () => {
           fwPatch: 8,
           gpsAgeSeconds: null,
           linkId: 'B2C3',
+          source: 'log',
         },
       ],
       [],

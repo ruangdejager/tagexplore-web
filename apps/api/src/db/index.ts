@@ -6,6 +6,11 @@ import type {
   BatterySeries,
   DeviceRow,
   DiscoveryCountPoint,
+  DiscoveryDetail,
+  DiscoveryPostDetail,
+  DiscoveryReadingDetail,
+  DiscoveryRoundDetail,
+  DiscoverySource,
   GeofenceRegion,
   GpsPoint,
   IngestRunRow,
@@ -188,6 +193,11 @@ CREATE TABLE IF NOT EXISTS readings (
   fw_patch        INTEGER,
   gps_age_s       INTEGER,
   link_id         TEXT,
+  -- Which ingest path wrote this row: 'cbor' for a campaign the unit POSTed
+  -- to us, 'log' for one scraped back out of its syslog. Both paths are live
+  -- and write the same key, so this is what decides precedence: a scraped row
+  -- never overwrites a pushed one (see writeReadings).
+  source          TEXT NOT NULL DEFAULT 'log',
   PRIMARY KEY (bracket_at, device_imei, tag_id)
 );
 
@@ -202,10 +212,19 @@ CREATE TABLE IF NOT EXISTS rounds (
   bracket_at        INTEGER NOT NULL,
   device_imei       TEXT NOT NULL REFERENCES devices(imei) ON DELETE CASCADE,
   tag_count         INTEGER NOT NULL,
+  -- On a 'cbor' round this is the firmware's own on-air measurement of the
+  -- campaign, sent in the POST body. On a 'log' round it is still the older
+  -- inference: bracket boundary to the round's last good block.
   duration_seconds  INTEGER,
   unit_battery_mv   INTEGER,
   reader_fw         TEXT,
   timed_out         INTEGER NOT NULL DEFAULT 0,
+  -- Same meaning as readings.source, and the same precedence rule.
+  source            TEXT NOT NULL DEFAULT 'log',
+  -- Exactly when the campaign reached the server, for a pushed round. Null on
+  -- a scraped one, which has no arrival time of its own: the only time it
+  -- carries is the 15-minute bracket its blocks were bucketed into.
+  received_at       INTEGER,
   PRIMARY KEY (bracket_at, device_imei)
 );
 
@@ -308,16 +327,25 @@ export interface ReadingInput {
   fwPatch: number | null;
   gpsAgeSeconds: number | null;
   linkId: string | null;
+  /** Which ingest path produced this row — decides precedence on write. */
+  source: DiscoverySource;
 }
 
 export interface RoundInput {
   bracketAt: number;
   deviceImei: string;
   tagCount: number;
+  /**
+   * The firmware's own on-air measurement on a `cbor` round; the older
+   * bracket-to-last-block inference on a `log` one.
+   */
   durationSeconds: number | null;
   unitBatteryMv: number | null;
   readerFw: string | null;
   timedOut: boolean;
+  source: DiscoverySource;
+  /** Exact server arrival time for a pushed round; null for a scraped one. */
+  receivedAt: number | null;
 }
 
 export interface ReadingWindow {
@@ -369,6 +397,8 @@ export interface BotReadingRow {
   fw_patch: number | null;
   gps_age_s: number | null;
   link_id: string | null;
+  /** Which ingest path wrote the row: `'cbor'` for a pushed campaign, `'log'` for a scraped one. */
+  source: string;
 }
 
 /** A raw `rounds` row, snake_case as SQLite returns it. */
@@ -380,6 +410,9 @@ export interface BotRoundRow {
   unit_battery_mv: number | null;
   reader_fw: string | null;
   timed_out: number;
+  source: string;
+  /** Exact server arrival time on a pushed round; null on a scraped one. */
+  received_at: number | null;
 }
 
 /**
@@ -433,6 +466,23 @@ function migrateReadingsLinkId(db: DatabaseSyncType): void {
   db.exec('ALTER TABLE readings ADD COLUMN link_id TEXT');
 }
 
+/**
+ * Same idea as `migrateReadingsLinkId`, for the two ingest paths telling
+ * themselves apart. Every row that predates the column was written by the
+ * log-scraping path, which is exactly what the `DEFAULT 'log'` backfills it
+ * as — so no separate data fix is needed.
+ */
+function migrateIngestSource(db: DatabaseSyncType): void {
+  const readingColumns = db.prepare('PRAGMA table_info(readings)').all() as Array<{ name: string }>;
+  if (!readingColumns.some((c) => c.name === 'source')) {
+    db.exec("ALTER TABLE readings ADD COLUMN source TEXT NOT NULL DEFAULT 'log'");
+  }
+  const roundColumns = db.prepare('PRAGMA table_info(rounds)').all() as Array<{ name: string }>;
+  const roundNames = new Set(roundColumns.map((c) => c.name));
+  if (!roundNames.has('source')) db.exec("ALTER TABLE rounds ADD COLUMN source TEXT NOT NULL DEFAULT 'log'");
+  if (!roundNames.has('received_at')) db.exec('ALTER TABLE rounds ADD COLUMN received_at INTEGER');
+}
+
 /** Same idea as `migrateReadingsLinkId`, for the reader's own radio id and cached position. */
 function migrateDevicesRadioAndGps(db: DatabaseSyncType): void {
   const columns = db.prepare('PRAGMA table_info(devices)').all() as Array<{ name: string }>;
@@ -445,6 +495,11 @@ function migrateDevicesRadioAndGps(db: DatabaseSyncType): void {
 
 function toBool(value: unknown): boolean {
   return Number(value) === 1;
+}
+
+/** Anything other than the one value the push path writes is the scraped path. */
+function asDiscoverySource(value: unknown): DiscoverySource {
+  return value === 'cbor' ? 'cbor' : 'log';
 }
 
 /**
@@ -484,6 +539,7 @@ export class Store {
     migrateUserOrgs(this.db);
     migrateReadingsLinkId(this.db);
     migrateDevicesRadioAndGps(this.db);
+    migrateIngestSource(this.db);
     bootstrapFoundingAdmin(this.db, foundingAdminUsername);
   }
 
@@ -1064,22 +1120,54 @@ export class Store {
   // --- Readings ------------------------------------------------------------
 
   /**
-   * Writes a poll's worth of readings and rounds in one transaction.
+   * Writes a poll's worth of readings and rounds in one transaction — the
+   * log-scraping path's only way in.
    *
-   * `INSERT OR REPLACE` rather than `INSERT`: every poll deliberately re-reads
-   * an overlapping window (a device can upload a bracket late), so the same row
+   * An upsert rather than a plain `INSERT`: every poll deliberately re-reads an
+   * overlapping window (a device can upload a bracket late), so the same row
    * arriving twice has to be a no-op rather than a constraint error.
+   *
+   * It is an upsert *with a condition* rather than `INSERT OR REPLACE`, because
+   * the same campaign also arrives by the push path for units on firmware that
+   * can POST it, and **a pushed row wins**. The two paths describe the same
+   * discovery, but not equally well: the push carries the firmware's own on-air
+   * duration and the exact moment the data reached us, while a scrape has only
+   * a duration inferred from the bracket boundary and no arrival time at all.
+   * So a scraped row is written only over another scraped row, never over a
+   * pushed one.
+   *
+   * The one thing a scrape knows that a push does not is the reader's own
+   * supply voltage, printed on the log's time marks and absent from the CBOR
+   * body — so that single column is still filled in on a pushed round, which is
+   * what the `COALESCE` below is for. Nothing else of a pushed round is touched.
    */
   writeReadings(readings: ReadingInput[], rounds: RoundInput[]): number {
     const readingStmt = this.db.prepare(
-      `INSERT OR REPLACE INTO readings
-       (bracket_at, device_imei, tag_id, battery_mv, rssi, hops, wave_count, movement_state, lat, lon, has_gps, fw_patch, gps_age_s, link_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO readings
+       (bracket_at, device_imei, tag_id, battery_mv, rssi, hops, wave_count, movement_state, lat, lon, has_gps, fw_patch, gps_age_s, link_id, source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (bracket_at, device_imei, tag_id) DO UPDATE SET
+         battery_mv = excluded.battery_mv, rssi = excluded.rssi, hops = excluded.hops,
+         wave_count = excluded.wave_count, movement_state = excluded.movement_state,
+         lat = excluded.lat, lon = excluded.lon, has_gps = excluded.has_gps,
+         fw_patch = excluded.fw_patch, gps_age_s = excluded.gps_age_s,
+         link_id = excluded.link_id, source = excluded.source
+       WHERE readings.source <> 'cbor'`,
     );
     const roundStmt = this.db.prepare(
-      `INSERT OR REPLACE INTO rounds
-       (bracket_at, device_imei, tag_count, duration_seconds, unit_battery_mv, reader_fw, timed_out)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO rounds
+       (bracket_at, device_imei, tag_count, duration_seconds, unit_battery_mv, reader_fw, timed_out, source, received_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (bracket_at, device_imei) DO UPDATE SET
+         tag_count        = CASE WHEN rounds.source = 'cbor' THEN rounds.tag_count ELSE excluded.tag_count END,
+         duration_seconds = CASE WHEN rounds.source = 'cbor' THEN rounds.duration_seconds ELSE excluded.duration_seconds END,
+         reader_fw        = CASE WHEN rounds.source = 'cbor' THEN rounds.reader_fw ELSE excluded.reader_fw END,
+         timed_out        = CASE WHEN rounds.source = 'cbor' THEN rounds.timed_out ELSE excluded.timed_out END,
+         source           = CASE WHEN rounds.source = 'cbor' THEN rounds.source ELSE excluded.source END,
+         received_at      = CASE WHEN rounds.source = 'cbor' THEN rounds.received_at ELSE excluded.received_at END,
+         -- The exception: only the log ever sees the reader's own supply
+         -- voltage, so this column is filled in even on a pushed round.
+         unit_battery_mv  = COALESCE(excluded.unit_battery_mv, rounds.unit_battery_mv)`,
     );
 
     this.db.exec('BEGIN');
@@ -1100,6 +1188,7 @@ export class Store {
           r.fwPatch,
           r.gpsAgeSeconds,
           r.linkId,
+          r.source,
         );
       }
       for (const r of rounds) {
@@ -1111,6 +1200,8 @@ export class Store {
           r.unitBatteryMv,
           r.readerFw,
           r.timedOut ? 1 : 0,
+          r.source,
+          r.receivedAt,
         );
       }
       this.db.exec('COMMIT');
@@ -1130,23 +1221,18 @@ export class Store {
    * our 200 was lost on the way back the identical campaign arrives again and
    * the second one has nothing to do.
    *
-   * The round is `INSERT OR IGNORE`, not `INSERT OR REPLACE` like
-   * `writeReadings` — deliberately. The same round also arrives by the
-   * log-scraping path, which knows the reader's own supply voltage — this
-   * path never does — so a scraped row must never be overwritten with this
-   * path's null there.
+   * **This path takes precedence over the log-scraping one**, in whichever
+   * order the two arrive. A scraped row describes the same discovery more
+   * poorly: its duration is inferred from the bracket boundary rather than
+   * measured on air by the firmware, and it has no arrival time at all. So the
+   * round is written over whatever is there, and `writeReadings` refuses to
+   * write back over it afterwards.
    *
-   * `duration_seconds` is a wrinkle: this path can now carry the unit's own
-   * on-air campaign timer (real, precise, direct from the firmware — see
-   * `TagDiscoveryCampaign.durationSeconds`), while the scraped path only ever
-   * had a rougher proxy for the same idea (bracket-to-first-good-block across
-   * every device in the round). If the push writes first with a real number
-   * and the scrape then arrives second, its `INSERT OR REPLACE` still
-   * overwrites it with the coarser estimate — a regression for that one
-   * column, accepted for now rather than special-cased, because sorting out
-   * which of two different measurements of "how long did this take" should
-   * win is a bigger decision than belongs in a storage method. Diffing the
-   * two, while both are live, is exactly how that decision should get made.
+   * `unit_battery_mv` is the single exception, in both directions: the reader's
+   * own supply voltage is printed on the log's time marks and is not in the
+   * CBOR body at all, so this path must not blank a value the scrape already
+   * found (the `COALESCE` below), and the scrape is still allowed to fill it in
+   * later on a round this path wrote.
    */
   writeTagDiscoveryPost(input: TagDiscoveryPostInput): { duplicate: boolean; readingsWritten: number } {
     const postStmt = this.db.prepare(
@@ -1157,13 +1243,22 @@ export class Store {
     );
     const readingStmt = this.db.prepare(
       `INSERT OR REPLACE INTO readings
-       (bracket_at, device_imei, tag_id, battery_mv, rssi, hops, wave_count, movement_state, lat, lon, has_gps, fw_patch, gps_age_s, link_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (bracket_at, device_imei, tag_id, battery_mv, rssi, hops, wave_count, movement_state, lat, lon, has_gps, fw_patch, gps_age_s, link_id, source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     const roundStmt = this.db.prepare(
-      `INSERT OR IGNORE INTO rounds
-       (bracket_at, device_imei, tag_count, duration_seconds, unit_battery_mv, reader_fw, timed_out)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO rounds
+       (bracket_at, device_imei, tag_count, duration_seconds, unit_battery_mv, reader_fw, timed_out, source, received_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (bracket_at, device_imei) DO UPDATE SET
+         tag_count        = excluded.tag_count,
+         duration_seconds = excluded.duration_seconds,
+         reader_fw        = excluded.reader_fw,
+         timed_out        = excluded.timed_out,
+         source           = excluded.source,
+         received_at      = excluded.received_at,
+         -- Never blanked: only the scraped path ever learns this one.
+         unit_battery_mv  = COALESCE(excluded.unit_battery_mv, rounds.unit_battery_mv)`,
     );
 
     this.db.exec('BEGIN');
@@ -1200,6 +1295,7 @@ export class Store {
           r.fwPatch,
           r.gpsAgeSeconds,
           r.linkId,
+          r.source,
         );
       }
       const round = input.round;
@@ -1211,6 +1307,8 @@ export class Store {
         round.unitBatteryMv,
         round.readerFw,
         round.timedOut ? 1 : 0,
+        round.source,
+        round.receivedAt,
       );
       this.db.exec('COMMIT');
     } catch (err) {
@@ -1291,23 +1389,44 @@ export class Store {
    * "the latest discovery"; the rest is what the count-history list scrolls
    * through.
    *
-   * `durationSeconds` is the slowest device's own `rounds.duration_seconds`
-   * for that bracket — how long after the bracket boundary (discovery is
-   * assumed to start exactly on it) the round's last successful block
-   * landed. Null when no round row exists for the bracket at all (older
-   * data, or a device excluded by `excludeDeviceImeis`).
+   * The timing columns follow the same precedence the writes do: if any of the
+   * bracket's rounds was pushed to us, the bracket is reported as `cbor` and
+   * only the pushed rounds are consulted for its timing; otherwise it falls
+   * back to the scraped ones.
+   *
+   * - `receivedAt` is when the campaign's data actually reached the server, and
+   *   exists only on a pushed round. Earliest wins when several readers pushed
+   *   into the same bracket — that is when the round's data started landing.
+   *   Null on a scraped bracket, which has no arrival time of its own.
+   * - `durationSeconds` is the firmware's own on-air measurement on a pushed
+   *   bracket. On a scraped one it stays the old inference: the slowest
+   *   device's `rounds.duration_seconds`, how long after the bracket boundary
+   *   (discovery is assumed to start exactly on it) the round's last good
+   *   block landed. Null when no round row exists for the bracket at all
+   *   (older data, or every device excluded by `excludeDeviceImeis`).
    */
   listDiscoveryCounts(orgId: string, limit = 200, excludeDeviceImeis?: string[]): DiscoveryCountPoint[] {
     const filterReadings = excludeDeviceFilterClause(excludeDeviceImeis, 'r');
     const filterRounds = excludeDeviceFilterClause(excludeDeviceImeis, 'ro');
+    // One correlated subquery over the bracket's rounds, shaped four ways:
+    // `pushed` picks the rounds this path is allowed to look at, so "pushed if
+    // there are any, scraped otherwise" is a COALESCE of two of them rather
+    // than a second pass over the table.
+    const roundAgg = (aggregate: string, pushed: boolean): string =>
+      `(SELECT ${aggregate} FROM rounds ro
+          JOIN devices d2 ON d2.imei = ro.device_imei
+         WHERE d2.org_id = :org AND ro.bracket_at = r.bracket_at
+           AND ro.source ${pushed ? '=' : '<>'} 'cbor'
+           ${filterRounds.sql})`;
     const rows = this.db
       .prepare(
         `SELECT r.bracket_at AS bracket_at, COUNT(DISTINCT r.tag_id) AS count,
-                (SELECT MAX(ro.duration_seconds) FROM rounds ro
-                   JOIN devices d2 ON d2.imei = ro.device_imei
-                  WHERE d2.org_id = :org AND ro.bracket_at = r.bracket_at
-                    ${filterRounds.sql}
-                ) AS duration_seconds
+                COALESCE(
+                  ${roundAgg('MAX(ro.duration_seconds)', true)},
+                  ${roundAgg('MAX(ro.duration_seconds)', false)}
+                ) AS duration_seconds,
+                ${roundAgg('MIN(ro.received_at)', true)} AS received_at,
+                ${roundAgg('COUNT(*)', true)} AS pushed_rounds
            FROM readings r
            JOIN devices d ON d.imei = r.device_imei
           WHERE d.org_id = :org
@@ -1321,8 +1440,137 @@ export class Store {
       bracket_at: number;
       count: number;
       duration_seconds: number | null;
+      received_at: number | null;
+      pushed_rounds: number | null;
     }>;
-    return rows.map((r) => ({ bracketAt: r.bracket_at, count: r.count, durationSeconds: r.duration_seconds }));
+    return rows.map((r) => ({
+      bracketAt: r.bracket_at,
+      count: r.count,
+      durationSeconds: r.duration_seconds,
+      receivedAt: r.received_at,
+      source: Number(r.pushed_rounds ?? 0) > 0 ? 'cbor' : 'log',
+    }));
+  }
+
+  /**
+   * Everything stored behind one count-history row: each reader's own round for
+   * the bracket, the CBOR receipt for the readers that pushed theirs, and every
+   * individual reading, uncollapsed.
+   *
+   * Unlike `listDiscoveryCounts` this is not deduped or aggregated in any way —
+   * the point of it is to show what actually landed, including two readers'
+   * separate rows for the same tag and including tags that are not on the
+   * organisation's whitelist, since "why is this tag not showing up" is one of
+   * the questions it exists to answer. The route restricts it to `dev` and
+   * `admin` accounts for exactly that reason.
+   */
+  discoveryDetail(orgId: string, bracketAt: number, excludeDeviceImeis?: string[]): DiscoveryDetail {
+    const filterRounds = excludeDeviceFilterClause(excludeDeviceImeis, 'ro');
+    const roundRows = this.db
+      .prepare(
+        `SELECT ro.device_imei, d.label AS device_label, ro.tag_count, ro.duration_seconds,
+                ro.unit_battery_mv, ro.reader_fw, ro.timed_out, ro.source, ro.received_at,
+                p.primary_device_id, p.session_utc, p.mode, p.primary_version, p.record_count, p.byte_count
+           FROM rounds ro
+           JOIN devices d ON d.imei = ro.device_imei
+           LEFT JOIN tag_discovery_posts p
+             ON p.device_imei = ro.device_imei AND p.bracket_at = ro.bracket_at
+          WHERE d.org_id = :org AND ro.bracket_at = :bracket
+            ${filterRounds.sql}
+          ORDER BY d.label COLLATE NOCASE ASC, ro.device_imei ASC`,
+      )
+      .all({ org: orgId, bracket: bracketAt, ...filterRounds.params }) as Array<{
+      device_imei: string;
+      device_label: string | null;
+      tag_count: number;
+      duration_seconds: number | null;
+      unit_battery_mv: number | null;
+      reader_fw: string | null;
+      timed_out: number;
+      source: string;
+      received_at: number | null;
+      primary_device_id: number | null;
+      session_utc: number | null;
+      mode: number | null;
+      primary_version: number | null;
+      record_count: number | null;
+      byte_count: number | null;
+    }>;
+
+    const filterReadings = excludeDeviceFilterClause(excludeDeviceImeis, 'r');
+    const readingRows = this.db
+      .prepare(
+        `SELECT r.device_imei, r.tag_id, r.battery_mv, r.rssi, r.hops, r.wave_count, r.movement_state,
+                r.lat, r.lon, r.has_gps, r.fw_patch, r.gps_age_s, r.link_id, r.source
+           FROM readings r
+           JOIN devices d ON d.imei = r.device_imei
+          WHERE d.org_id = :org AND r.bracket_at = :bracket
+            ${filterReadings.sql}
+          ORDER BY r.tag_id ASC, r.device_imei ASC`,
+      )
+      .all({ org: orgId, bracket: bracketAt, ...filterReadings.params }) as Array<{
+      device_imei: string;
+      tag_id: string;
+      battery_mv: number | null;
+      rssi: number | null;
+      hops: number | null;
+      wave_count: number | null;
+      movement_state: number | null;
+      lat: number | null;
+      lon: number | null;
+      has_gps: number;
+      fw_patch: number | null;
+      gps_age_s: number | null;
+      link_id: string | null;
+      source: string;
+    }>;
+
+    const rounds: DiscoveryRoundDetail[] = roundRows.map((r) => {
+      // The receipt is only there for a reader that pushed; a scraped round
+      // has no CBOR envelope to show.
+      const post: DiscoveryPostDetail | null =
+        r.primary_device_id === null
+          ? null
+          : {
+              primaryDeviceId: r.primary_device_id,
+              sessionUtc: Number(r.session_utc),
+              mode: Number(r.mode),
+              primaryVersion: Number(r.primary_version),
+              recordCount: Number(r.record_count),
+              byteCount: Number(r.byte_count),
+            };
+      return {
+        deviceImei: r.device_imei,
+        deviceLabel: r.device_label && r.device_label.length > 0 ? r.device_label : null,
+        tagCount: r.tag_count,
+        durationSeconds: r.duration_seconds,
+        unitBatteryMv: r.unit_battery_mv,
+        readerFw: r.reader_fw,
+        timedOut: toBool(r.timed_out),
+        source: asDiscoverySource(r.source),
+        receivedAt: r.received_at,
+        post,
+      };
+    });
+
+    const readings: DiscoveryReadingDetail[] = readingRows.map((r) => ({
+      deviceImei: r.device_imei,
+      tagId: r.tag_id,
+      batteryMv: r.battery_mv,
+      rssi: r.rssi,
+      hops: r.hops,
+      waveCount: r.wave_count,
+      movementState: r.movement_state,
+      lat: r.lat,
+      lon: r.lon,
+      hasGps: toBool(r.has_gps),
+      fwVersionPatch: r.fw_patch,
+      gpsAgeSeconds: r.gps_age_s,
+      linkId: r.link_id,
+      source: asDiscoverySource(r.source),
+    }));
+
+    return { bracketAt, rounds, readings };
   }
 
   /** The most recent bracket this device has any reading for, or null if it has never reported. */
@@ -1654,7 +1902,7 @@ export class Store {
     const rows = this.db
       .prepare(
         `SELECT r.bracket_at, r.device_imei, r.tag_id, r.battery_mv, r.rssi, r.hops, r.wave_count,
-                r.movement_state, r.lat, r.lon, r.has_gps, r.fw_patch, r.gps_age_s, r.link_id
+                r.movement_state, r.lat, r.lon, r.has_gps, r.fw_patch, r.gps_age_s, r.link_id, r.source
            FROM readings r
            JOIN devices d ON d.imei = r.device_imei
           WHERE d.org_id = ? AND r.bracket_at BETWEEN ? AND ?
@@ -1669,7 +1917,7 @@ export class Store {
     const rows = this.db
       .prepare(
         `SELECT ro.bracket_at, ro.device_imei, ro.tag_count, ro.duration_seconds,
-                ro.unit_battery_mv, ro.reader_fw, ro.timed_out
+                ro.unit_battery_mv, ro.reader_fw, ro.timed_out, ro.source, ro.received_at
            FROM rounds ro
            JOIN devices d ON d.imei = ro.device_imei
           WHERE d.org_id = ? AND ro.bracket_at BETWEEN ? AND ?

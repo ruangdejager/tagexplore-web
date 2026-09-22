@@ -173,6 +173,26 @@ export function createApi(deps: ApiDeps): Hono<Env> {
   });
 
   /**
+   * Everything stored behind one row of that count history: each reader's own
+   * round, the CBOR receipt where the round was pushed rather than scraped, and
+   * every individual reading uncollapsed.
+   *
+   * `dev` and `admin` only. It is a diagnostic view of how the data arrived —
+   * raw column values, ingest path, byte counts — and it deliberately shows
+   * readings for tags outside the organisation's whitelist, which a client has
+   * no business seeing and no use for.
+   */
+  api.get('/discovery-detail', (c) => {
+    const role = c.get('user').role;
+    if (role !== 'admin' && role !== 'dev') return c.json({ error: 'Not available for your account.' }, 403);
+
+    const at = Number(c.req.query('at'));
+    if (!Number.isFinite(at)) return c.json({ error: '`at` must be epoch milliseconds.' }, 400);
+
+    return c.json(deps.store.discoveryDetail(c.get('orgId'), at, parseExcludeDeviceImeis(c.req.query())));
+  });
+
+  /**
    * Battery over time. `tags` selects which series to return — the client sends
    * only the tags whose toggle is on, so switching one off costs nothing to draw
    * and nothing to transfer.

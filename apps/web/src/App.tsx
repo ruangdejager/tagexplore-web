@@ -13,6 +13,7 @@ import { AdminPanel } from './components/AdminPanel.js';
 import { AlertsPanel } from './components/AlertsPanel.js';
 import { BatteryTrends } from './components/BatteryTrends.js';
 import { CountPanel } from './components/CountPanel.js';
+import { DiscoveryRawModal } from './components/DiscoveryRawModal.js';
 import { DeviceCard } from './components/DeviceCard.js';
 import { DeviceList } from './components/DeviceList.js';
 import { LoginScreen } from './components/LoginScreen.js';
@@ -102,6 +103,10 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   // showing instead of the live state — null means live. Owned here, not
   // inside CountPanel, because it has to reach the map.
   const [historyAt, setHistoryAt] = useState<number | null>(null);
+  // Which round's raw data is open, if any. Held here rather than in CountPanel
+  // so the overlay is a child of the page, not of the panel's own card — see
+  // CountPanel's `onShowRaw`.
+  const [rawDiscoveryAt, setRawDiscoveryAt] = useState<number | null>(null);
   const [historySnapshots, setHistorySnapshots] = useState<TagSnapshot[] | null>(null);
   const [historyLinks, setHistoryLinks] = useState<LinkReading[] | null>(null);
   const [historyDevices, setHistoryDevices] = useState<DeviceRow[] | null>(null);
@@ -121,6 +126,9 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   const [savedOrgId, setSavedOrgId] = useState<string | null>(null);
 
   const isAdmin = auth.user?.role === 'admin';
+  // A round's raw data — every stored column and which ingest path wrote it —
+  // is a diagnostic view, not a client-facing one. Same rule the server applies.
+  const canSeeRawData = isAdmin || auth.user?.role === 'dev';
   // A user can belong to several organisations; the dropdown only ever offers
   // the ones they're actually assigned to. An admin's dropdown offers every
   // organisation instead, regardless of their own (usually empty) membership
@@ -631,6 +639,8 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
             onGoLive={goLive}
             latestDiscoveryAt={latestDiscoveryAt}
             excludeDeviceImeis={excludeDeviceImeis}
+            canSeeRawData={canSeeRawData}
+            onShowRaw={setRawDiscoveryAt}
           />
           <AlertsPanel
             watchedTagIds={watchedTagIds}
@@ -668,6 +678,15 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
 
       {showAdmin && auth.user && (
         <AdminPanel currentUserId={auth.user.id} onClose={() => setShowAdmin(false)} onDataChanged={refresh} />
+      )}
+
+      {rawDiscoveryAt !== null && (
+        <DiscoveryRawModal
+          bracketAt={rawDiscoveryAt}
+          orgId={orgId}
+          excludeDeviceImeis={excludeDeviceImeis}
+          onClose={() => setRawDiscoveryAt(null)}
+        />
       )}
     </div>
   );

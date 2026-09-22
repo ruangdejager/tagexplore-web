@@ -32,15 +32,28 @@ interface Props {
   /** Devices switched off in the main list — the count history's own fetch
    *  needs this too, since it comes from a separate query than `snapshots`. */
   excludeDeviceImeis?: string[];
+  /**
+   * Whether this account may open a round's raw data — `dev` and `admin` only.
+   * The server enforces the same rule; this just keeps the icon off a client's
+   * screen instead of offering them a button that answers 403.
+   */
+  canSeeRawData: boolean;
+  /**
+   * Opens a round's raw data. Owned by `App` rather than rendered here: this
+   * panel sits inside a `.card`, whose `backdrop-filter` makes it the
+   * containing block for anything `position: fixed` inside it — a full-screen
+   * overlay opened from here would be trapped in the 272px card.
+   */
+  onShowRaw: (bracketAt: number) => void;
 }
 
 function timestamp(ms: number): string {
   return new Date(ms).toLocaleString('en-ZA', { timeZone: 'Africa/Johannesburg', hour12: false });
 }
 
-/** A round is assumed to start exactly on its bracket, so this is just how
- *  long after that the slowest device's block landed — e.g. `1m26s`, or
- *  `59s` under a minute. */
+/** e.g. `1m26s`, or `59s` under a minute. What the number *measures* depends on
+ *  how the round arrived — the firmware's own campaign timer on a pushed round,
+ *  the old bracket-to-last-block estimate on a scraped one. */
 function formatDuration(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
   const m = Math.floor(seconds / 60);
@@ -66,6 +79,8 @@ export function CountPanel({
   onGoLive,
   latestDiscoveryAt,
   excludeDeviceImeis,
+  canSeeRawData,
+  onShowRaw,
 }: Props): JSX.Element {
   const [showHistory, setShowHistory] = useState(false);
   const [history, setHistory] = useState<DiscoveryCountPoint[] | null>(null);
@@ -144,19 +159,38 @@ export function CountPanel({
             </div>
           ) : history && history.length > 0 ? (
             history.map((h) => (
-              <button
-                key={h.bracketAt}
-                type="button"
-                className={`count-history-row${h.bracketAt === historyAt ? ' active' : ''}`}
-                onClick={() => onSelectHistory(h.bracketAt)}
-                title="Show this round's snapshot on the map"
-              >
-                <span>{timestamp(h.bracketAt)}</span>
-                <span className="count-history-duration">
-                  {h.durationSeconds !== null ? formatDuration(h.durationSeconds) : '—'}
-                </span>
-                <span>{h.count}</span>
-              </button>
+              <div key={h.bracketAt} className={`count-history-row${h.bracketAt === historyAt ? ' active' : ''}`}>
+                <button
+                  type="button"
+                  className="count-history-pick"
+                  onClick={() => onSelectHistory(h.bracketAt)}
+                  title={
+                    h.receivedAt !== null
+                      ? `Data arrived ${timestamp(h.receivedAt)} — click to show this round's snapshot on the map`
+                      : `Scraped from the log into the ${timestamp(h.bracketAt)} bracket — click to show this round's snapshot on the map`
+                  }
+                >
+                  {/* The exact arrival time when the unit pushed the round to
+                      us; only a scraped round falls back to its bracket, which
+                      is the only time it has. */}
+                  <span>{timestamp(h.receivedAt ?? h.bracketAt)}</span>
+                  <span className="count-history-duration">
+                    {h.durationSeconds !== null ? formatDuration(h.durationSeconds) : '—'}
+                  </span>
+                  <span className="count-history-count">{h.count}</span>
+                </button>
+                {canSeeRawData && (
+                  <button
+                    type="button"
+                    className="count-history-info"
+                    onClick={() => onShowRaw(h.bracketAt)}
+                    title="Show this round's raw data"
+                    aria-label={`Raw data for the round at ${timestamp(h.receivedAt ?? h.bracketAt)}`}
+                  >
+                    i
+                  </button>
+                )}
+              </div>
             ))
           ) : (
             <div className="empty" style={{ padding: '10px 0' }}>

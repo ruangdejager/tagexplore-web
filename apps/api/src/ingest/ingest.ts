@@ -68,6 +68,8 @@ function storeBlocks(store: Store, config: Config, imei: string, blocks: Discove
         unitBatteryMv,
         readerFw: null,
         timedOut: true,
+        source: 'log',
+        receivedAt: null,
       });
       continue;
     }
@@ -77,10 +79,17 @@ function storeBlocks(store: Store, config: Config, imei: string, blocks: Discove
       bracketAt,
       deviceImei: imei,
       tagCount: good.total,
+      // Still inferred here, and only here: bracket boundary to the round's
+      // last good block. A unit that can POST its campaign reports the real
+      // figure instead and that one wins — see `writeReadings`.
       durationSeconds: good.durationSeconds,
       unitBatteryMv,
       readerFw: good.perDeviceFwVersion[imei] ?? null,
       timedOut: false,
+      source: 'log',
+      // A scraped round has no arrival time: the log is read long after the
+      // fact, so all it can be tied to is the bracket its blocks fell in.
+      receivedAt: null,
     });
 
     for (const tag of good.tags) {
@@ -99,6 +108,7 @@ function storeBlocks(store: Store, config: Config, imei: string, blocks: Discove
         fwPatch: tag.fwVersionPatch,
         gpsAgeSeconds: tag.gpsAgeSeconds,
         linkId: tag.linkId,
+        source: 'log',
       });
     }
   }

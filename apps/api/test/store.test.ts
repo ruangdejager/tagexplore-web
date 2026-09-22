@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { GeofenceRegion } from '@tagexplore/core';
-import { Store, type ReadingInput } from '../src/db/index.js';
+import { Store, type ReadingInput, type RoundInput } from '../src/db/index.js';
 
 let dir: string;
 let store: Store;
@@ -32,6 +32,21 @@ function reading(partial: Partial<ReadingInput> & Pick<ReadingInput, 'bracketAt'
     fwPatch: 3,
     gpsAgeSeconds: null,
     linkId: null,
+    source: 'log',
+    ...partial,
+  };
+}
+
+function round(partial: Partial<RoundInput> & Pick<RoundInput, 'bracketAt'>): RoundInput {
+  return {
+    deviceImei: DEVICE,
+    tagCount: 1,
+    durationSeconds: null,
+    unitBatteryMv: null,
+    readerFw: null,
+    timedOut: false,
+    source: 'log',
+    receivedAt: null,
     ...partial,
   };
 }
@@ -356,8 +371,8 @@ describe('listDiscoveryCounts', () => {
 
     const counts = store.listDiscoveryCounts(ORG);
     expect(counts).toEqual([
-      { bracketAt: T0, count: 2, durationSeconds: null },
-      { bracketAt: T0 - HOUR, count: 1, durationSeconds: null },
+      { bracketAt: T0, count: 2, durationSeconds: null, receivedAt: null, source: 'log' },
+      { bracketAt: T0 - HOUR, count: 1, durationSeconds: null, receivedAt: null, source: 'log' },
     ]);
   });
 
@@ -370,13 +385,15 @@ describe('listDiscoveryCounts', () => {
       ],
       [
         // 14:16:26 landing for a 14:15:00 bracket — 1m26s.
-        { bracketAt: T0, deviceImei: DEVICE, tagCount: 1, durationSeconds: 86, unitBatteryMv: null, readerFw: null, timedOut: false },
+        round({ bracketAt: T0, deviceImei: DEVICE, durationSeconds: 86 }),
         // The other device was faster — only the slowest is reported.
-        { bracketAt: T0, deviceImei: SECOND_DEVICE, tagCount: 1, durationSeconds: 12, unitBatteryMv: null, readerFw: null, timedOut: false },
+        round({ bracketAt: T0, deviceImei: SECOND_DEVICE, durationSeconds: 12 }),
       ],
     );
 
-    expect(store.listDiscoveryCounts(ORG)).toEqual([{ bracketAt: T0, count: 1, durationSeconds: 86 }]);
+    expect(store.listDiscoveryCounts(ORG)).toEqual([
+      { bracketAt: T0, count: 1, durationSeconds: 86, receivedAt: null, source: 'log' },
+    ]);
   });
 
   it('drops an excluded device’s round from the duration the same way it drops its readings', () => {
@@ -387,12 +404,14 @@ describe('listDiscoveryCounts', () => {
         reading({ bracketAt: T0, tagId: '3E1E', deviceImei: SECOND_DEVICE }),
       ],
       [
-        { bracketAt: T0, deviceImei: DEVICE, tagCount: 1, durationSeconds: 86, unitBatteryMv: null, readerFw: null, timedOut: false },
-        { bracketAt: T0, deviceImei: SECOND_DEVICE, tagCount: 1, durationSeconds: 12, unitBatteryMv: null, readerFw: null, timedOut: false },
+        round({ bracketAt: T0, deviceImei: DEVICE, durationSeconds: 86 }),
+        round({ bracketAt: T0, deviceImei: SECOND_DEVICE, durationSeconds: 12 }),
       ],
     );
 
-    expect(store.listDiscoveryCounts(ORG, 200, [DEVICE])).toEqual([{ bracketAt: T0, count: 1, durationSeconds: 12 }]);
+    expect(store.listDiscoveryCounts(ORG, 200, [DEVICE])).toEqual([
+      { bracketAt: T0, count: 1, durationSeconds: 12, receivedAt: null, source: 'log' },
+    ]);
   });
 
   it('ignores tags not on the whitelist and rounds from another organisation', () => {
@@ -407,7 +426,43 @@ describe('listDiscoveryCounts', () => {
       [],
     );
 
-    expect(store.listDiscoveryCounts(ORG)).toEqual([{ bracketAt: T0, count: 1, durationSeconds: null }]);
+    expect(store.listDiscoveryCounts(ORG)).toEqual([
+      { bracketAt: T0, count: 1, durationSeconds: null, receivedAt: null, source: 'log' },
+    ]);
+  });
+
+  it('reports a pushed round by the moment it arrived, and its firmware-measured duration', () => {
+    store.addOrgTags(ORG, ['3E1E']);
+    const arrived = T0 + 37_000;
+    store.writeReadings(
+      [reading({ bracketAt: T0, tagId: '3E1E' })],
+      [round({ bracketAt: T0, durationSeconds: 52, source: 'cbor', receivedAt: arrived })],
+    );
+
+    expect(store.listDiscoveryCounts(ORG)).toEqual([
+      { bracketAt: T0, count: 1, durationSeconds: 52, receivedAt: arrived, source: 'cbor' },
+    ]);
+  });
+
+  it('prefers the pushed round over a scraped one in the same bracket', () => {
+    store.addOrgTags(ORG, ['3E1E']);
+    const arrived = T0 + 37_000;
+    store.writeReadings(
+      [
+        reading({ bracketAt: T0, tagId: '3E1E', deviceImei: DEVICE }),
+        reading({ bracketAt: T0, tagId: '3E1E', deviceImei: SECOND_DEVICE }),
+      ],
+      [
+        // The scraped reader is the slower of the two, so under the old
+        // "slowest device wins" rule its 86s would have been reported.
+        round({ bracketAt: T0, deviceImei: DEVICE, durationSeconds: 86 }),
+        round({ bracketAt: T0, deviceImei: SECOND_DEVICE, durationSeconds: 52, source: 'cbor', receivedAt: arrived }),
+      ],
+    );
+
+    expect(store.listDiscoveryCounts(ORG)).toEqual([
+      { bracketAt: T0, count: 1, durationSeconds: 52, receivedAt: arrived, source: 'cbor' },
+    ]);
   });
 
   it('respects the limit, newest first', () => {
@@ -422,5 +477,61 @@ describe('listDiscoveryCounts', () => {
     );
 
     expect(store.listDiscoveryCounts(ORG, 2).map((c) => c.bracketAt)).toEqual([T0, T0 - HOUR]);
+  });
+});
+
+describe('discoveryDetail', () => {
+  it('returns each reader\u2019s round and every raw reading, uncollapsed and unfiltered', () => {
+    store.addOrgTags(ORG, ['3E1E']);
+    const arrived = T0 + 37_000;
+    store.writeReadings(
+      [
+        reading({ bracketAt: T0, tagId: '3E1E', deviceImei: DEVICE }),
+        reading({ bracketAt: T0, tagId: '3E1E', deviceImei: SECOND_DEVICE, source: 'cbor' }),
+        // Not on the whitelist, and still shown: "why is this tag missing" is
+        // one of the questions the raw view exists to answer.
+        reading({ bracketAt: T0, tagId: '441F', deviceImei: DEVICE }),
+        reading({ bracketAt: T0 - HOUR, tagId: '3E1E', deviceImei: DEVICE }),
+      ],
+      [
+        round({ bracketAt: T0, deviceImei: DEVICE, durationSeconds: 86 }),
+        round({ bracketAt: T0, deviceImei: SECOND_DEVICE, durationSeconds: 52, source: 'cbor', receivedAt: arrived }),
+      ],
+    );
+
+    const detail = store.discoveryDetail(ORG, T0);
+    expect(detail.bracketAt).toBe(T0);
+    expect(detail.rounds.map((r) => [r.deviceImei, r.source, r.receivedAt])).toEqual([
+      [DEVICE, 'log', null],
+      [SECOND_DEVICE, 'cbor', arrived],
+    ]);
+    // Both readers' rows for '3E1E' survive, and the other bracket's does not.
+    expect(detail.readings.map((r) => [r.tagId, r.deviceImei])).toEqual([
+      ['3E1E', DEVICE],
+      ['3E1E', SECOND_DEVICE],
+      ['441F', DEVICE],
+    ]);
+  });
+
+  it('drops an excluded device the same way the count list does', () => {
+    store.addOrgTags(ORG, ['3E1E']);
+    store.writeReadings(
+      [
+        reading({ bracketAt: T0, tagId: '3E1E', deviceImei: DEVICE }),
+        reading({ bracketAt: T0, tagId: '3E1E', deviceImei: SECOND_DEVICE }),
+      ],
+      [round({ bracketAt: T0, deviceImei: DEVICE }), round({ bracketAt: T0, deviceImei: SECOND_DEVICE })],
+    );
+
+    const detail = store.discoveryDetail(ORG, T0, [DEVICE]);
+    expect(detail.rounds.map((r) => r.deviceImei)).toEqual([SECOND_DEVICE]);
+    expect(detail.readings.map((r) => r.deviceImei)).toEqual([SECOND_DEVICE]);
+  });
+
+  it('never reaches into another organisation\u2019s round', () => {
+    store.addOrgTags(OTHER_ORG, ['3E1E']);
+    store.writeReadings([reading({ bracketAt: T0, tagId: '3E1E', deviceImei: OTHER_DEVICE })], []);
+
+    expect(store.discoveryDetail(ORG, T0)).toEqual({ bracketAt: T0, rounds: [], readings: [] });
   });
 });

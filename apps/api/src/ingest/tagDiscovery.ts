@@ -9,6 +9,13 @@
  * campaign is expected to arrive twice by two routes for a while, which is
  * deliberate: it lets the two be diffed.
  *
+ * Where the two disagree, **this path wins**. A pushed campaign carries two
+ * things a scrape cannot reconstruct — the firmware's own on-air measurement of
+ * how long the discovery took, and the exact moment the data reached the server
+ * — against the scrape's 15-minute bracket and a duration inferred from it. The
+ * scraped path keeps inferring both for the field units that can only be
+ * scraped; it just no longer writes back over a round that was pushed.
+ *
  * The body is a definite-length CBOR map with small unsigned-integer keys:
  *
  *   1: primaryDeviceId  uint32  the reporting primary tag's own LoRa id
@@ -297,9 +304,12 @@ export interface TagDiscoveryStoreResult {
  * Readings land in the same `readings` table the scraped path writes to, keyed
  * by the same `(bracket, device, tag)` — that is what makes a pushed reading
  * join against the rows already there for that tag rather than forming a
- * parallel set. It also means whichever path writes last wins on a field the
- * two disagree about, which for now is intended: both are live so they can be
- * compared.
+ * parallel set. The bracket stays the key so the two paths keep meeting on one
+ * row; the exact arrival time rides along on the round beside it as
+ * `receivedAt`, which is what the count history shows for a pushed round.
+ *
+ * Where the two paths disagree about a field, this one wins — see
+ * `Store.writeTagDiscoveryPost`.
  */
 export function storeTagDiscovery(
   store: Store,
@@ -332,6 +342,7 @@ export function storeTagDiscovery(
     fwPatch: tag.fwVersionPatch,
     gpsAgeSeconds: tag.gpsAgeSeconds,
     linkId: tag.linkId,
+    source: 'cbor',
   }));
 
   const result = store.writeTagDiscoveryPost({
@@ -348,18 +359,22 @@ export function storeTagDiscovery(
       bracketAt,
       deviceImei: imei,
       tagCount: readings.length,
-      // The unit's own campaign timer, when it reported one — see
-      // TagDiscoveryCampaign.durationSeconds. Left null (same as before this
-      // field existed) on older firmware or a basic-mode campaign, in which
-      // case the scraped path's own bracket-to-first-block estimate is what
-      // eventually fills it, if that round arrives here first (INSERT OR
-      // IGNORE below never lets this path overwrite that estimate either way).
+      // The unit's own on-air campaign timer, as reported — nothing is inferred
+      // from the bracket here (see TagDiscoveryCampaign.durationSeconds). Null
+      // on older firmware or a basic-mode campaign, which measure nothing; the
+      // scraped path's estimate then fills it if that round ever arrives.
       durationSeconds: campaign.durationSeconds,
       // Not reported over this endpoint: the unit's own supply voltage is
       // printed on the log's time marks, which this path has no equivalent of.
+      // `writeTagDiscoveryPost` leaves an already-scraped value alone rather
+      // than blanking it with this null.
       unitBatteryMv: null,
       readerFw: formatPrimaryVersion(campaign.primaryVersion),
       timedOut: false,
+      source: 'cbor',
+      // What makes this round's data tied to a real moment rather than only to
+      // a 15-minute bracket: when the POST actually landed on the server.
+      receivedAt: receivedAtMs,
     },
   });
 

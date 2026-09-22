@@ -3,6 +3,10 @@ import type {
   BatterySeries,
   DeviceRow,
   DiscoveryCountPoint,
+  DiscoveryDetail,
+  DiscoveryReadingDetail,
+  DiscoveryRoundDetail,
+  DiscoverySource,
   GeofenceRegion,
   GpsPoint,
   IngestRunRow,
@@ -22,6 +26,10 @@ export type {
   BatterySeries,
   DeviceRow,
   DiscoveryCountPoint,
+  DiscoveryDetail,
+  DiscoveryReadingDetail,
+  DiscoveryRoundDetail,
+  DiscoverySource,
   GeofenceRegion,
   GpsPoint,
   LinkReading,
@@ -141,6 +149,24 @@ export const fetchDiscoveryCounts = (
   request(
     scoped('/api/discovery-counts', orgId, {
       limit,
+      excludeDevices: excludeDeviceImeis?.length ? excludeDeviceImeis.join(',') : undefined,
+    }),
+  );
+
+/**
+ * Everything stored behind one count-history row — each reader's round, its
+ * CBOR receipt where there is one, and every raw reading. `dev`/`admin` only;
+ * the server answers 403 for anyone else, so the caller only asks when the
+ * signed-in account is one of those.
+ */
+export const fetchDiscoveryDetail = (
+  orgId: string | null,
+  at: number,
+  excludeDeviceImeis?: string[],
+): Promise<DiscoveryDetail> =>
+  request(
+    scoped('/api/discovery-detail', orgId, {
+      at,
       excludeDevices: excludeDeviceImeis?.length ? excludeDeviceImeis.join(',') : undefined,
     }),
   );

@@ -131,14 +131,99 @@ export interface GeofenceRegion {
   coordinates: Array<[number, number]>;
 }
 
+/**
+ * How a round's data reached us.
+ *
+ * `cbor` is the unit POSTing the campaign to us directly, `log` is us pulling
+ * its syslog afterwards and scraping the same campaign back out of the text.
+ * The two carry different quality of the same facts — an exact arrival clock
+ * and a firmware-measured duration against a 15-minute bracket and an
+ * inferred one — so which path a round came by is worth showing, not just
+ * worth recording.
+ */
+export type DiscoverySource = 'log' | 'cbor';
+
 /** One discovery round's unique-tag count — one row per bracket the org's devices reported at. */
 export interface DiscoveryCountPoint {
   bracketAt: number;
   count: number;
-  /** How long after `bracketAt` the round's slowest device finished — the
-   *  round is assumed to start exactly on the bracket. Null when no round
-   *  timing is on record for it. */
+  /**
+   * How long the discovery campaign took.
+   *
+   * On a `cbor` round this is the firmware's own on-air measurement, reported
+   * in the POST body. On a `log` round it is the older inference: how long
+   * after `bracketAt` the round's slowest device finished, the round being
+   * assumed to start exactly on the bracket. Null when no round timing is on
+   * record for the bracket at all.
+   */
   durationSeconds: number | null;
+  /**
+   * Exactly when the campaign's data reached the server, for a round that was
+   * pushed to us. Null on a scraped round, which has no arrival time of its
+   * own — all it has is the bracket its blocks were bucketed into.
+   */
+  receivedAt: number | null;
+  /** `cbor` when any of the bracket's rounds was pushed — a push takes precedence. */
+  source: DiscoverySource;
+}
+
+/** One reader's side of one discovery round, as stored. */
+export interface DiscoveryRoundDetail {
+  deviceImei: string;
+  deviceLabel: string | null;
+  tagCount: number;
+  durationSeconds: number | null;
+  unitBatteryMv: number | null;
+  readerFw: string | null;
+  timedOut: boolean;
+  source: DiscoverySource;
+  receivedAt: number | null;
+  /** The pushed campaign's own receipt, when this reader's round came by CBOR. */
+  post: DiscoveryPostDetail | null;
+}
+
+/** The CBOR body's own envelope, off the push receipt — not any one reading. */
+export interface DiscoveryPostDetail {
+  /** The reporting primary tag's LoRa id, as the firmware sent it (decimal). */
+  primaryDeviceId: number;
+  /** Unix seconds off the unit's own RTC when it accepted the campaign. */
+  sessionUtc: number;
+  /** 0 = advanced, 1 = basic. */
+  mode: number;
+  /** Packed `major*10000 + minor*100 + patch`; 0 when the primary predates the field. */
+  primaryVersion: number;
+  recordCount: number;
+  byteCount: number;
+}
+
+/** One stored `readings` row of a discovery round, unaggregated. */
+export interface DiscoveryReadingDetail {
+  deviceImei: string;
+  tagId: string;
+  batteryMv: number | null;
+  rssi: number | null;
+  hops: number | null;
+  waveCount: number | null;
+  movementState: number | null;
+  lat: number | null;
+  lon: number | null;
+  hasGps: boolean;
+  fwVersionPatch: number | null;
+  gpsAgeSeconds: number | null;
+  linkId: string | null;
+  source: DiscoverySource;
+}
+
+/**
+ * Everything stored about one discovery round, per reader and per reading —
+ * the raw material behind a single count-history row. Restricted to `dev` and
+ * `admin` accounts: it is a diagnostic view of how the data arrived, not
+ * something a client has any use for.
+ */
+export interface DiscoveryDetail {
+  bracketAt: number;
+  rounds: DiscoveryRoundDetail[];
+  readings: DiscoveryReadingDetail[];
 }
 
 /** Latest known state of one tag — one row in the sidebar, one pin on the map. */

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { AuthUser } from '@tagexplore/core';
+import type { AuthUser, DiscoveryDetail } from '@tagexplore/core';
 import { loadConfig, type Config } from '../src/config.js';
 import { Store } from '../src/db/index.js';
 import { createAccountApi } from '../src/routes/account.js';
@@ -456,5 +456,158 @@ describe('user preferences', () => {
 
   it('requires a session', async () => {
     expect((await get('/api/account/preferences')).status).toBe(401);
+  });
+});
+
+/**
+ * The raw-data view behind a count-history row. It exposes stored column values
+ * and readings for tags outside the whitelist, so who may open it is part of
+ * the contract, not just a UI choice.
+ */
+describe('GET /api/discovery-detail', () => {
+  const ORG = 'org-a';
+  const IMEI = '866049074634379';
+  const BRACKET = Date.parse('2026-09-18T12:15:00Z');
+  const ARRIVED = BRACKET + 37_000;
+
+  /** Signs an account up and puts it in the organisation at the given role. */
+  async function member(username: string, role: 'client' | 'dev' | 'admin'): Promise<string> {
+    const cookie = await signup(username);
+    const user = store.getUserByUsername(username);
+    if (!user) throw new Error('signup did not create the user');
+    store.addUserOrg(user.id, ORG);
+    store.setUserRole(user.id, role);
+    return cookie;
+  }
+
+  beforeEach(() => {
+    store.createOrg(ORG, 'Org A');
+    store.createDevice(IMEI, ORG, 'Reader 379');
+    store.addOrgTags(ORG, ['3E1E']);
+  });
+
+  /** One round that was pushed to us, and one tag nobody has whitelisted. */
+  function writePushedRound(): void {
+    store.writeTagDiscoveryPost({
+      deviceImei: IMEI,
+      primaryDeviceId: 0x00a1b2c3,
+      sessionUtc: Math.floor(BRACKET / 1000),
+      receivedAt: ARRIVED,
+      bracketAt: BRACKET,
+      mode: 0,
+      primaryVersion: 20400,
+      byteCount: 65,
+      readings: [
+        {
+          bracketAt: BRACKET,
+          deviceImei: IMEI,
+          tagId: '3E1E',
+          batteryMv: 4012,
+          rssi: -87,
+          hops: 1,
+          waveCount: 2,
+          movementState: 1,
+          lat: null,
+          lon: null,
+          hasGps: false,
+          fwPatch: 8,
+          gpsAgeSeconds: null,
+          linkId: null,
+          source: 'cbor',
+        },
+        {
+          bracketAt: BRACKET,
+          deviceImei: IMEI,
+          tagId: '441F',
+          batteryMv: 3900,
+          rssi: -70,
+          hops: 1,
+          waveCount: 1,
+          movementState: 0,
+          lat: null,
+          lon: null,
+          hasGps: false,
+          fwPatch: 8,
+          gpsAgeSeconds: null,
+          linkId: null,
+          source: 'cbor',
+        },
+      ],
+      round: {
+        bracketAt: BRACKET,
+        deviceImei: IMEI,
+        tagCount: 2,
+        durationSeconds: 52,
+        unitBatteryMv: null,
+        readerFw: 'v2.4.0',
+        timedOut: false,
+        source: 'cbor',
+        receivedAt: ARRIVED,
+      },
+    });
+  }
+
+  it('gives a dev the round, its arrival time, its CBOR receipt and every raw reading', async () => {
+    writePushedRound();
+    const cookie = await member('tinkerer', 'dev');
+
+    const res = await get(`/api/discovery-detail?orgId=${ORG}&at=${BRACKET}`, cookie);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as DiscoveryDetail;
+
+    expect(body.bracketAt).toBe(BRACKET);
+    expect(body.rounds).toHaveLength(1);
+    expect(body.rounds[0]).toMatchObject({
+      deviceImei: IMEI,
+      deviceLabel: 'Reader 379',
+      source: 'cbor',
+      receivedAt: ARRIVED,
+      durationSeconds: 52,
+    });
+    expect(body.rounds[0]?.post).toMatchObject({ mode: 0, primaryVersion: 20400, recordCount: 2, byteCount: 65 });
+    // Unaggregated and unfiltered — '441F' is not on the whitelist, and seeing
+    // that it arrived anyway is half the point of this view.
+    expect(body.readings.map((r) => r.tagId)).toEqual(['3E1E', '441F']);
+    expect(body.readings[0]).toMatchObject({ source: 'cbor', batteryMv: 4012, rssi: -87 });
+  });
+
+  it('says a scraped round has no arrival time rather than inventing one', async () => {
+    store.writeReadings(
+      [],
+      [
+        {
+          bracketAt: BRACKET,
+          deviceImei: IMEI,
+          tagCount: 1,
+          durationSeconds: 86,
+          unitBatteryMv: 4019,
+          readerFw: 'v2.4.0',
+          timedOut: false,
+          source: 'log',
+          receivedAt: null,
+        },
+      ],
+    );
+    const cookie = await member('tinkerer', 'dev');
+
+    const body = (await (await get(`/api/discovery-detail?orgId=${ORG}&at=${BRACKET}`, cookie)).json()) as DiscoveryDetail;
+    expect(body.rounds[0]).toMatchObject({ source: 'log', receivedAt: null, durationSeconds: 86 });
+    expect(body.rounds[0]?.post).toBeNull();
+  });
+
+  it('refuses a client account', async () => {
+    writePushedRound();
+    const cookie = await member('shepherd', 'client');
+    expect((await get(`/api/discovery-detail?orgId=${ORG}&at=${BRACKET}`, cookie)).status).toBe(403);
+  });
+
+  it('rejects a missing or unparseable `at`', async () => {
+    const cookie = await member('tinkerer', 'dev');
+    expect((await get(`/api/discovery-detail?orgId=${ORG}`, cookie)).status).toBe(400);
+    expect((await get(`/api/discovery-detail?orgId=${ORG}&at=soon`, cookie)).status).toBe(400);
+  });
+
+  it('requires a session', async () => {
+    expect((await get(`/api/discovery-detail?orgId=${ORG}&at=${BRACKET}`)).status).toBe(401);
   });
 });
