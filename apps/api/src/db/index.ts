@@ -1506,7 +1506,14 @@ export class Store {
            JOIN devices d ON d.imei = r.device_imei
           WHERE d.org_id = :org AND r.bracket_at = :bracket
             ${filterReadings.sql}
-          ORDER BY r.tag_id ASC, r.device_imei ASC`,
+          -- Wave first, then hops: the two columns that say where a tag sat in
+          -- the mesh, so the table reads outward from the primary. The
+          -- IS NULL terms push basic-mode rows (which report neither) to the
+          -- bottom rather than letting SQLite sort their nulls to the top as
+          -- if they were the lowest value.
+          ORDER BY r.wave_count IS NULL, r.wave_count ASC,
+                   r.hops IS NULL, r.hops ASC,
+                   r.tag_id ASC, r.device_imei ASC`,
       )
       .all({ org: orgId, bracket: bracketAt, ...filterReadings.params }) as Array<{
       device_imei: string;

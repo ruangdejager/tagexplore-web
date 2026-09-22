@@ -566,9 +566,10 @@ describe('GET /api/discovery-detail', () => {
     });
     expect(body.rounds[0]?.post).toMatchObject({ mode: 0, primaryVersion: 20400, recordCount: 2, byteCount: 65 });
     // Unaggregated and unfiltered — '441F' is not on the whitelist, and seeing
-    // that it arrived anyway is half the point of this view.
-    expect(body.readings.map((r) => r.tagId)).toEqual(['3E1E', '441F']);
-    expect(body.readings[0]).toMatchObject({ source: 'cbor', batteryMv: 4012, rssi: -87 });
+    // that it arrived anyway is half the point of this view. It leads because
+    // it is a wave earlier, not because of its id.
+    expect(body.readings.map((r) => r.tagId)).toEqual(['441F', '3E1E']);
+    expect(body.readings[1]).toMatchObject({ source: 'cbor', batteryMv: 4012, rssi: -87 });
   });
 
   it('says a scraped round has no arrival time rather than inventing one', async () => {

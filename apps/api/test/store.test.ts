@@ -513,6 +513,29 @@ describe('discoveryDetail', () => {
     ]);
   });
 
+  it('orders readings by wave count, then hop count, with the unmeasured ones last', () => {
+    store.writeReadings(
+      [
+        reading({ bracketAt: T0, tagId: 'AAA1', waveCount: 2, hops: 1 }),
+        reading({ bracketAt: T0, tagId: 'AAA2', waveCount: 1, hops: 3 }),
+        // Basic-mode readings report neither, so they sort to the bottom rather
+        // than to the top as SQLite would otherwise put their nulls.
+        reading({ bracketAt: T0, tagId: 'AAA3', waveCount: null, hops: null }),
+        reading({ bracketAt: T0, tagId: 'AAA4', waveCount: 1, hops: 1 }),
+        reading({ bracketAt: T0, tagId: 'AAA5', waveCount: 2, hops: null }),
+      ],
+      [],
+    );
+
+    expect(store.discoveryDetail(ORG, T0).readings.map((r) => r.tagId)).toEqual([
+      'AAA4', // 1 / 1
+      'AAA2', // 1 / 3
+      'AAA1', // 2 / 1
+      'AAA5', // 2 / no hop count
+      'AAA3', // neither
+    ]);
+  });
+
   it('drops an excluded device the same way the count list does', () => {
     store.addOrgTags(ORG, ['3E1E']);
     store.writeReadings(

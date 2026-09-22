@@ -177,11 +177,11 @@ export function DiscoveryRawModal({ bracketAt, orgId, excludeDeviceImeis, onClos
                 <tr>
                   <th>Tag</th>
                   <th>Reader</th>
-                  <th>Via</th>
                   <th>Battery</th>
                   <th>RSSI</th>
-                  <th>Hops</th>
+                  {/* Wave before hops, matching the order the rows are sorted in. */}
                   <th>Wave</th>
+                  <th>Hops</th>
                   <th>Move</th>
                   <th>GPS</th>
                   <th>Fix age</th>
@@ -193,14 +193,14 @@ export function DiscoveryRawModal({ bracketAt, orgId, excludeDeviceImeis, onClos
                 {detail.readings.map((r) => (
                   <tr key={`${r.deviceImei}-${r.tagId}`}>
                     <td className="mono">{r.tagId}</td>
+                    {/* No ingest path per row: the reader column already names
+                        the round it belongs to, and that round's own block
+                        above says how it arrived. */}
                     <td className="mono">{r.deviceImei}</td>
-                    <td>
-                      <SourceTag source={r.source} />
-                    </td>
                     <td className="mono">{r.batteryMv === null ? '—' : `${r.batteryMv} mV`}</td>
                     <td className="mono">{orDash(r.rssi)}</td>
-                    <td className="mono">{orDash(r.hops)}</td>
                     <td className="mono">{orDash(r.waveCount)}</td>
+                    <td className="mono">{orDash(r.hops)}</td>
                     {/* 0 = moving, 1 = still — the tag's own raw field, carried
                         through unchanged by both paths. */}
                     <td className="mono">{r.movementState === null ? '—' : r.movementState === 1 ? 'still (1)' : `moving (${r.movementState})`}</td>
@@ -212,7 +212,7 @@ export function DiscoveryRawModal({ bracketAt, orgId, excludeDeviceImeis, onClos
                 ))}
                 {detail.readings.length === 0 && (
                   <tr>
-                    <td colSpan={12} className="dim">
+                    <td colSpan={11} className="dim">
                       No readings stored for this bracket.
                     </td>
                   </tr>
@@ -220,8 +220,8 @@ export function DiscoveryRawModal({ bracketAt, orgId, excludeDeviceImeis, onClos
               </tbody>
             </table>
             <div className="modal-hint">
-              Every stored row for this round, including tags outside the whitelist and the same tag heard by more than
-              one reader.
+              Every stored row for this round, by wave then hop count, including tags outside the whitelist and the same
+              tag heard by more than one reader.
             </div>
           </>
         )}
