@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useState } from 'react';
 import { describeSchedule, formatAge, formatMinuteOfDay, parseMinuteOfDay, shortDeviceId } from '@tagexplore/core';
 import * as api from '../api.js';
+import { IdentityCell, IdentityEvidenceRow, pushStatusClass } from './DeviceIdentity.js';
 import type {
   AdminUserRow,
   DeviceRow,
@@ -441,8 +442,12 @@ function DevicesTab({ orgs, run }: { orgs: OrganisationRow[]; run: Run }): JSX.E
   const [imei, setImei] = useState('');
   const [label, setLabel] = useState('');
   const [radioId, setRadioId] = useState('');
+  const [carriedTagId, setCarriedTagId] = useState('');
   const [orgId, setOrgId] = useState('');
   const [busyImei, setBusyImei] = useState<string | null>(null);
+  // Which device's identity evidence is expanded, if any — one at a time, so
+  // the table doesn't turn into a wall of candidate rows.
+  const [openIdentity, setOpenIdentity] = useState<string | null>(null);
 
   useEffect(() => {
     api.fetchAdminDevices().then((res) => setDevices(res.devices)).catch(() => setDevices([]));
@@ -457,14 +462,16 @@ function DevicesTab({ orgs, run }: { orgs: OrganisationRow[]; run: Run }): JSX.E
         onSubmit={(e) => {
           e.preventDefault();
           if (!imei.trim() || !orgId) return;
-          void run(() => api.createDevice(imei.trim(), orgId, label.trim(), radioId.trim()), `Added ${imei.trim()}.`).then(
-            () => {
-              setImei('');
-              setLabel('');
-              setRadioId('');
-              reload();
-            },
-          );
+          void run(
+            () => api.createDevice(imei.trim(), orgId, label.trim(), radioId.trim(), carriedTagId.trim()),
+            `Added ${imei.trim()}.`,
+          ).then(() => {
+            setImei('');
+            setLabel('');
+            setRadioId('');
+            setCarriedTagId('');
+            reload();
+          });
         }}
       >
         <label>
@@ -481,7 +488,16 @@ function DevicesTab({ orgs, run }: { orgs: OrganisationRow[]; run: Run }): JSX.E
             value={radioId}
             onChange={(e) => setRadioId(e.target.value)}
             placeholder="E20"
-            title="This reader's own id, as it appears in a tag's RssiSrc column when the tag reached it directly"
+            title="This reader's own id, as it appears in a tag's RssiSrc column when the tag reached it directly. Left blank, it is worked out from the readings."
+          />
+        </label>
+        <label>
+          Carried tag
+          <input
+            value={carriedTagId}
+            onChange={(e) => setCarriedTagId(e.target.value)}
+            placeholder="3E1E"
+            title="The ordinary tag on the same animal that carries this reader — its position stands in when the reader's own fix is too old to apply. Left blank, it is worked out from the readings."
           />
         </label>
         <label>
@@ -506,7 +522,9 @@ function DevicesTab({ orgs, run }: { orgs: OrganisationRow[]; run: Run }): JSX.E
             <th>IMEI</th>
             <th>Label</th>
             <th>Radio ID</th>
+            <th>Carried tag</th>
             <th>Organisation</th>
+            <th>Ingest</th>
             <th>First report</th>
             <th>Every</th>
             <th>Per day</th>
@@ -517,8 +535,11 @@ function DevicesTab({ orgs, run }: { orgs: OrganisationRow[]; run: Run }): JSX.E
           </tr>
         </thead>
         <tbody>
-          {devices.map((device) => (
-            <tr key={device.imei}>
+          {devices.map((device) => {
+            const pushed = device.effectiveIngestMode === 'push';
+            return (
+            <Fragment key={device.imei}>
+            <tr>
               <td className="mono" title={device.imei}>
                 …{shortDeviceId(device.imei)}
               </td>
@@ -531,19 +552,24 @@ function DevicesTab({ orgs, run }: { orgs: OrganisationRow[]; run: Run }): JSX.E
                   }}
                 />
               </td>
-              <td className="mono">
-                <input
-                  defaultValue={device.radioId ?? ''}
-                  placeholder="none"
-                  title="This reader's own id, as it appears in a tag's RssiSrc column when the tag reached it directly"
-                  onBlur={(e) => {
-                    const next = e.target.value.trim().toUpperCase();
-                    if (next !== (device.radioId ?? '')) {
-                      void run(() => api.updateDevice(device.imei, { radioId: next })).then(reload);
-                    }
-                  }}
-                />
-              </td>
+              <IdentityCell
+                device={device}
+                field="radioId"
+                title="This reader's own id, as it appears in a tag's RssiSrc column when the tag reached it directly. Clearing it hands the field back to the inference."
+                expanded={openIdentity === device.imei}
+                onToggleExpanded={() => setOpenIdentity((v) => (v === device.imei ? null : device.imei))}
+                run={run}
+                reload={reload}
+              />
+              <IdentityCell
+                device={device}
+                field="carriedTagId"
+                title="The ordinary tag on the same animal that carries this reader. Clearing it hands the field back to the inference."
+                expanded={openIdentity === device.imei}
+                onToggleExpanded={() => setOpenIdentity((v) => (v === device.imei ? null : device.imei))}
+                run={run}
+                reload={reload}
+              />
               <td>
                 <select
                   value={device.orgId}
@@ -556,8 +582,31 @@ function DevicesTab({ orgs, run }: { orgs: OrganisationRow[]; run: Run }): JSX.E
                   ))}
                 </select>
               </td>
-              <td className="mono">
+              <td>
+                {/* The auto option names what it currently resolves to, so the
+                    table answers "is this one being scraped?" without anyone
+                    having to reason about the grace period. */}
+                <select
+                  value={device.ingestMode}
+                  title={
+                    device.lastPushAt === null
+                      ? 'This reader has never pushed a campaign.'
+                      : `Last push ${seenLabel(device.lastPushAt)}.`
+                  }
+                  onChange={(e) =>
+                    void run(() =>
+                      api.updateDevice(device.imei, { ingestMode: e.target.value as DeviceRow['ingestMode'] }),
+                    ).then(reload)
+                  }
+                >
+                  <option value="auto">auto ({device.effectiveIngestMode})</option>
+                  <option value="push">push</option>
+                  <option value="scrape">scrape</option>
+                </select>
+              </td>
+              <td className="mono" data-dead={pushed ? '1' : '0'}>
                 <input
+                  disabled={pushed}
                   type="time"
                   defaultValue={formatMinuteOfDay(device.reportStartMinute)}
                   onBlur={(e) => {
@@ -568,8 +617,9 @@ function DevicesTab({ orgs, run }: { orgs: OrganisationRow[]; run: Run }): JSX.E
                   }}
                 />
               </td>
-              <td className="mono" style={{ whiteSpace: 'nowrap' }}>
+              <td className="mono" style={{ whiteSpace: 'nowrap' }} data-dead={pushed ? '1' : '0'}>
                 <input
+                  disabled={pushed}
                   style={{ width: 56, display: 'inline-block' }}
                   type="number"
                   min={1}
@@ -583,8 +633,9 @@ function DevicesTab({ orgs, run }: { orgs: OrganisationRow[]; run: Run }): JSX.E
                 />
                 m
               </td>
-              <td className="mono">
+              <td className="mono" data-dead={pushed ? '1' : '0'}>
                 <input
+                  disabled={pushed}
                   style={{ width: 52 }}
                   type="number"
                   min={1}
@@ -597,9 +648,10 @@ function DevicesTab({ orgs, run }: { orgs: OrganisationRow[]; run: Run }): JSX.E
                   }
                 />
               </td>
-              <td className="mono" style={{ whiteSpace: 'nowrap' }}>
+              <td className="mono" style={{ whiteSpace: 'nowrap' }} data-dead={pushed ? '1' : '0'}>
                 +
                 <input
+                  disabled={pushed}
                   style={{ width: 48, display: 'inline-block' }}
                   type="number"
                   min={0}
@@ -613,12 +665,22 @@ function DevicesTab({ orgs, run }: { orgs: OrganisationRow[]; run: Run }): JSX.E
                 />
                 m
               </td>
-              <td className="mono" style={{ whiteSpace: 'nowrap' }}>
-                {describeSchedule(device)}
+              <td className="mono" style={{ whiteSpace: 'nowrap' }} data-dead={pushed ? '1' : '0'}>
+                {pushed ? 'not scraped' : describeSchedule(device)}
               </td>
-              <td className={statusClass(device.lastIngestStatus)} title={device.lastIngestStatus ?? ''}>
-                {device.lastIngestAt === null ? 'never' : seenLabel(device.lastIngestAt)}
-              </td>
+              {/* A pushing reader's "last ingest" is when it last posted, not
+                  when we last read its log — and a pinned push device never
+                  falls back to scraping, so a long silence has to be visible
+                  here or it is visible nowhere. */}
+              {pushed ? (
+                <td className={pushStatusClass(device)} title="Last pushed campaign">
+                  {device.lastPushAt === null ? 'never pushed' : seenLabel(device.lastPushAt)}
+                </td>
+              ) : (
+                <td className={statusClass(device.lastIngestStatus)} title={device.lastIngestStatus ?? ''}>
+                  {device.lastIngestAt === null ? 'never' : seenLabel(device.lastIngestAt)}
+                </td>
+              )}
               <td>
                 <div className="actions">
                   <button
@@ -655,8 +717,13 @@ function DevicesTab({ orgs, run }: { orgs: OrganisationRow[]; run: Run }): JSX.E
                   </button>
                 </div>
               </td>
-            </tr>
-          ))}
+                </tr>
+                {openIdentity === device.imei && (
+                  <IdentityEvidenceRow device={device} run={run} reload={reload} colSpan={13} />
+                )}
+              </Fragment>
+            );
+          })}
         </tbody>
       </table>
 
@@ -665,6 +732,13 @@ function DevicesTab({ orgs, run }: { orgs: OrganisationRow[]; run: Run }): JSX.E
         day, read 10 minutes later — means logs are fetched at 04:20, 05:20 … 22:20, and the device is left alone
         overnight. With the settings API configured these four numbers are refreshed from the device itself every few
         hours, so editing them by hand only matters for a device whose settings cannot be read.
+      </p>
+      <p className="modal-hint">
+        All of that describes <em>scraping</em> a device&rsquo;s syslog. A device that posts its campaigns to us has
+        nothing to schedule, so its schedule is greyed out and its log is left alone. On <em>auto</em> that is decided
+        by whether it has actually pushed in the last three hours — so a unit whose modem goes quiet falls back to
+        scraping on its own, and the fallback read backfills whatever the silence cost. Pinning a device to{' '}
+        <em>push</em> switches that safety net off.
       </p>
     </>
   );

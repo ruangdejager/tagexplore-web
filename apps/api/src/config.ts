@@ -55,6 +55,68 @@ export interface Config {
   bracketMinutes: number;
 
   /**
+   * How often every active reader's own position (and the geofences that ride
+   * the same events-API call) is re-read, regardless of how its readings
+   * arrive. This used to be a side effect of a log scrape, which tied the
+   * purple marker to the scrape schedule and meant a push-only device's marker
+   * would never move again.
+   */
+  positionPollMinutes: number;
+  /**
+   * Per-reader debounce on the position read a pushed campaign triggers. A
+   * unit posting several campaigns in a burst makes one events-API call, and
+   * the debounce is shared with the periodic poll above so a push doesn't
+   * reset that clock twice.
+   */
+  positionPollOnPushMinutes: number;
+  /**
+   * How long a reader on `ingest_mode = 'auto'` may go without pushing before
+   * it falls back to log scraping. Three missed hourly campaigns by default —
+   * comfortably longer than the fleet's own report interval, so ordinary
+   * jitter never flaps it.
+   */
+  pushGraceMinutes: number;
+
+  /** SSE keepalive. Also what the client times its "stream went quiet" check off. */
+  liveHeartbeatSeconds: number;
+  /** Runaway-tab guard: past this, `/api/events` answers 503 and the client polls instead. */
+  liveMaxSubscribersPerOrg: number;
+
+  /**
+   * How close a reader's own GPS fix has to be to a discovery before it counts
+   * as that discovery's position. Outside it, the reader is shown greyed
+   * rather than presented as current — see `devices/position.ts`.
+   */
+  devicePositionWindowMinutes: number;
+  /**
+   * Whether a scraped round's window is widened by half a bracket. A scraped
+   * round only knows the 15-minute bucket its blocks fell in, so its true time
+   * is anywhere within ±bracketMinutes/2 of that — folding the uncertainty in
+   * explicitly beats pretending the bracket is exact. A pushed round has a
+   * real arrival time and never gets the slack.
+   */
+  devicePositionBracketSlack: boolean;
+
+  /** Trailing window of readings the identity inference reasons over. */
+  inferenceWindowDays: number;
+  /** Per-device rate limit on running that inference. */
+  inferenceIntervalMinutes: number;
+  /** Discovery rounds of evidence before a radio id may be chosen. */
+  radioIdMinRounds: number;
+  /**
+   * Share of the wave-one vote the winner needs. Note `num()` rejects values
+   * ≤ 0, so a deliberate 0 falls back to this default rather than accepting
+   * every candidate — which is the safe direction for a threshold.
+   */
+  radioIdMinShare: number;
+  /** Discovery rounds of evidence before a carried tag may be chosen — about a day at 19 reports. */
+  carriedTagMinRounds: number;
+  /** Acceptance floor for the carried-tag score. Same `num()` note as `radioIdMinShare`. */
+  carriedTagMinScore: number;
+  /** How far clear of the runner-up the winner has to be. A near-tie abstains. */
+  carriedTagMinMargin: number;
+
+  /**
    * Logs every push-ingest POST with its IMEI, byte count and full raw body
    * hex. On by default for the first field round of the CBOR endpoint: the
    * same campaign also arrives by the log-scraping path, and diffing our
@@ -100,6 +162,25 @@ export function loadConfig(): Config {
     backfillDays: num(process.env['BACKFILL_DAYS'], 7),
     pollLookbackHours: num(process.env['POLL_LOOKBACK_HOURS'], 4),
     bracketMinutes: num(process.env['BRACKET_MINUTES'], 15),
+
+    positionPollMinutes: num(process.env['POSITION_POLL_MINUTES'], 5),
+    positionPollOnPushMinutes: num(process.env['POSITION_POLL_ON_PUSH_MINUTES'], 5),
+    pushGraceMinutes: num(process.env['PUSH_GRACE_MINUTES'], 180),
+
+    liveHeartbeatSeconds: num(process.env['LIVE_HEARTBEAT_SECONDS'], 25),
+    liveMaxSubscribersPerOrg: num(process.env['LIVE_MAX_SUBSCRIBERS_PER_ORG'], 50),
+
+    devicePositionWindowMinutes: num(process.env['DEVICE_POSITION_WINDOW_MINUTES'], 10),
+    devicePositionBracketSlack: bool(process.env['DEVICE_POSITION_BRACKET_SLACK'], true),
+
+    inferenceWindowDays: num(process.env['INFERENCE_WINDOW_DAYS'], 7),
+    inferenceIntervalMinutes: num(process.env['INFERENCE_INTERVAL_MINUTES'], 30),
+    radioIdMinRounds: num(process.env['RADIO_ID_MIN_ROUNDS'], 5),
+    radioIdMinShare: num(process.env['RADIO_ID_MIN_SHARE'], 0.8),
+    carriedTagMinRounds: num(process.env['CARRIED_TAG_MIN_ROUNDS'], 20),
+    carriedTagMinScore: num(process.env['CARRIED_TAG_MIN_SCORE'], 0.8),
+    carriedTagMinMargin: num(process.env['CARRIED_TAG_MIN_MARGIN'], 0.15),
+
     tagDiscoveryDebug: bool(process.env['TAG_DISCOVERY_DEBUG'], true),
     foundingAdminUsername: process.env['FOUNDING_ADMIN_USERNAME'] ?? 'ruandj',
     foundingAdminPassword: process.env['FOUNDING_ADMIN_PASSWORD'] ?? 'Rdj@5046',

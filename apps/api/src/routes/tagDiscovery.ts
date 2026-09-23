@@ -1,11 +1,15 @@
 import { Hono } from 'hono';
 import type { Config } from '../config.js';
 import type { Store } from '../db/index.js';
+import type { LiveBus } from '../events/bus.js';
+import type { Scheduler } from '../ingest/scheduler.js';
 import { decodeTagDiscovery, storeTagDiscovery } from '../ingest/tagDiscovery.js';
 
 export interface TagDiscoveryApiDeps {
   store: Store;
   config: Config;
+  bus?: LiveBus;
+  scheduler?: Scheduler;
 }
 
 /** The FarmRanger's own modem IMEI — 15 decimal digits, and the only identification on the request. */
@@ -71,13 +75,27 @@ export function createTagDiscoveryApi(deps: TagDiscoveryApiDeps): Hono {
     const campaign = decoded.campaign;
     let result;
     try {
-      result = storeTagDiscovery(deps.store, deps.config, imei, campaign, receivedAt, body.length);
+      result = storeTagDiscovery(deps.store, deps.config, imei, campaign, receivedAt, body.length, deps.bus);
     } catch (err) {
       // Still a 200 — a storage fault is ours, and making the unit bin the
       // campaign over it helps nobody.
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[tagdiscovery] imei=${imei} store failed: ${message}`);
       return c.json({ ok: false, error: 'Could not store the campaign.' }, 200);
+    }
+
+    // The one thing a campaign cannot carry is where the unit was when it ran,
+    // so the events API is asked for that now rather than at the next poll —
+    // which is what puts the reader's fix inside the applicability window of
+    // the readings that just arrived.
+    //
+    // Fire-and-forget on purpose: the response must not wait on it. The modem
+    // treats anything but a prompt 200 as an error, retries once inside the
+    // same short cellular session, and then drops the campaign.
+    if (result.outcome === 'stored') {
+      void deps.scheduler?.notifyPush(imei).catch(() => {
+        // `pollDevicePosition` already logs its own failures.
+      });
     }
 
     console.info(

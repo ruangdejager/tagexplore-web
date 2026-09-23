@@ -1,14 +1,25 @@
 import { Hono } from 'hono';
+import { streamSSE } from 'hono/streaming';
 import { parseTagIdList } from '@tagexplore/core';
 import { currentUser } from '../auth/session.js';
 import type { Config } from '../config.js';
 import type { Store, UserRow } from '../db/index.js';
-import { refreshDeviceFully } from '../ingest/ingest.js';
+import { resolveDevicePosition } from '../devices/position.js';
+import type { LiveBus, LiveEvent } from '../events/bus.js';
+import { effectiveIngestMode } from '../ingest/scheduler.js';
 
 export interface ApiDeps {
   store: Store;
   config: Config;
+  bus: LiveBus;
 }
+
+/**
+ * Identifies this process to a reconnecting client. A reconnect that finds a
+ * different value reconnected across a restart or a deploy, and has to assume
+ * it missed something — see `useLiveEvents`.
+ */
+const SERVER_STARTED_AT = Date.now();
 
 const DEFAULT_WINDOW_HOURS = 72;
 const MAX_WINDOW_DAYS = 365;
@@ -116,6 +127,32 @@ export function createApi(deps: ApiDeps): Hono<Env> {
   /** The organisation's whitelisted tags — the toggle list for the trend view. */
   api.get('/tags', (c) => c.json({ tags: deps.store.listOrgTags(c.get('orgId')) }));
 
+  /**
+   * Switches one tag off, or back on, for the whole organisation.
+   *
+   * Open to any member rather than admins only, on purpose: switching a tag
+   * off records that it is known to be inactive, and the person who notices a
+   * dead tag in the field is rarely the person with the admin password. It is
+   * also trivially reversible and plainly attributed in the UI, which is what
+   * makes that safe.
+   */
+  api.patch('/tags/:tagId', async (c) => {
+    const orgId = c.get('orgId');
+    const tagId = c.req.param('tagId').toUpperCase();
+    if (!deps.store.listOrgTags(orgId).some((t) => t.tagId === tagId)) {
+      return c.json({ error: 'That tag is not on this organisation’s list.' }, 404);
+    }
+
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    if (typeof body['hidden'] !== 'boolean') return c.json({ error: '`hidden` must be true or false.' }, 400);
+
+    deps.store.setOrgTagHidden(orgId, tagId, body['hidden']);
+    // Everyone looking at this org has to see the new count, not just whoever
+    // clicked — which is the entire reason this moved off a user preference.
+    deps.bus.publish({ type: 'tags', orgId, imei: '', at: Date.now() });
+    return c.json({ tags: deps.store.listOrgTags(orgId) });
+  });
+
   /** Latest state of every whitelisted tag heard in the window: the map and the sidebar. */
   api.get('/snapshots', (c) => {
     const window = readWindow(c.req.query(), Date.now());
@@ -222,22 +259,28 @@ export function createApi(deps: ApiDeps): Hono<Env> {
 
   /**
    * The organisation's readers, so the tag card can name the device that heard
-   * a tag. `at` (epoch ms) swaps each reader's position for wherever it was as
-   * of that time instead of its current one — a past discovery round's own
-   * purple marker, not today's.
+   * a tag.
+   *
+   * Every row goes through `resolveDevicePosition`, with or without `at`: a
+   * reader's cached fix has to be judged against a discovery before it can be
+   * shown as that discovery's position, and "live" is just the reader's own
+   * newest round rather than a different rule. `at` (epoch ms) picks a past
+   * round instead — that round's own purple marker, not today's.
    */
   api.get('/devices', (c) => {
-    let devices = deps.store.listDevices(c.get('orgId'));
-
     const atRaw = c.req.query('at');
+    let at: number | null = null;
     if (atRaw !== undefined) {
-      const at = Number(atRaw);
+      at = Number(atRaw);
       if (!Number.isFinite(at)) return c.json({ error: '`at` must be epoch milliseconds.' }, 400);
-      devices = devices.map((d) => {
-        const position = deps.store.getDevicePositionAt(d.imei, at);
-        return { ...d, lat: position?.lat ?? null, lon: position?.lon ?? null, gpsUpdatedAt: position?.reportedAt ?? null };
-      });
     }
+
+    const nowMs = Date.now();
+    const pushGraceMs = deps.config.pushGraceMinutes * 60_000;
+    const devices = deps.store
+      .listDevices(c.get('orgId'))
+      .map((d) => resolveDevicePosition(deps.store, deps.config, d, at))
+      .map((d) => ({ ...d, effectiveIngestMode: effectiveIngestMode(d, d.lastPushAt, nowMs, pushGraceMs) }));
 
     // A non-admin has no business seeing ingest error strings; the label, IMEI
     // and whether it is active are enough to make sense of the map.
@@ -251,22 +294,82 @@ export function createApi(deps: ApiDeps): Hono<Env> {
   api.get('/geofences', (c) => c.json({ geofences: deps.store.listGeofences(c.get('orgId')) }));
 
   /**
-   * What "Refresh" in the main app actually means: not a re-read of whatever
-   * is already in the database, but a live pull — schedule, log, position and
-   * geofences — for every one of this organisation's active readers, run in
-   * parallel. The client re-fetches its own snapshots/devices/geofences
-   * afterward; this just makes sure there is something new to find.
+   * The live stream that replaced the Refresh button.
+   *
+   * It sits under the same org-scoping middleware as every other route here,
+   * so it needs no auth of its own: no session is a 401, someone else's
+   * organisation a 403, and an admin's `?orgId=` override works exactly as it
+   * does on `/snapshots`.
+   *
+   * Each frame is a *signal*, never data — "this organisation has something
+   * new" — and the client answers it by re-fetching through the ordinary
+   * endpoints, which re-apply the whitelist and the device exclusions. That is
+   * deliberate: one serialisation path, one place where filtering happens.
+   *
+   * The global `compress()` in `index.ts` leaves this alone — hono excludes
+   * `text/event-stream` from its compressible types. If that ever stops being
+   * true the stream will silently buffer and every frame will arrive late, in
+   * a batch, which is a miserable thing to debug from the symptom.
    */
-  api.post('/refresh', async (c) => {
+  api.get('/events', (c) => {
     const orgId = c.get('orgId');
-    const devices = deps.store.listDevices(orgId).filter((d) => d.active);
-    const outcomes = await Promise.allSettled(devices.map((d) => refreshDeviceFully(deps.store, deps.config, d.imei)));
-    const devicesResult = outcomes.map((outcome, i) => ({
-      imei: (devices[i] as (typeof devices)[number]).imei,
-      ok: outcome.status === 'fulfilled',
-      error: outcome.status === 'rejected' ? (outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason)) : null,
-    }));
-    return c.json({ devices: devicesResult });
+    if (deps.bus.subscriberCount(orgId) >= deps.config.liveMaxSubscribersPerOrg) {
+      return c.json({ error: 'Too many live connections for this organisation.' }, 503);
+    }
+
+    // `streamSSE` sets Content-Type, Cache-Control and Connection itself, and
+    // does it after this point — so only the one it doesn't know about is set
+    // here. It tells an nginx-family proxy (Railway's edge among them) not to
+    // buffer the response, which would otherwise hold every frame back until
+    // the stream ends.
+    c.header('X-Accel-Buffering', 'no');
+
+    return streamSSE(c, async (stream) => {
+      // `publish` is synchronous and called from inside ingest transactions,
+      // while `writeSSE` is async — so the listener never awaits. Writes are
+      // queued onto a promise tail instead, which also keeps them in order.
+      let tail: Promise<void> = Promise.resolve();
+      const queue = (write: () => Promise<void>): void => {
+        tail = tail.then(write).catch(() => {
+          // A dead connection fails every subsequent write; `onAbort` is what
+          // actually cleans up, so there is nothing useful to do here.
+        });
+      };
+
+      const unsubscribe = deps.bus.subscribe(orgId, (event: LiveEvent) => {
+        queue(() => stream.writeSSE({ event: event.type, data: JSON.stringify(event) }));
+      });
+
+      // Comment frames: they keep an idle-timeout proxy from closing the
+      // connection, and give the client something to measure silence against.
+      const heartbeat = setInterval(() => {
+        queue(async () => {
+          await stream.write(': ping\n\n');
+        });
+      }, deps.config.liveHeartbeatSeconds * 1000);
+
+      const cleanup = (): void => {
+        clearInterval(heartbeat);
+        unsubscribe();
+      };
+      stream.onAbort(cleanup);
+
+      try {
+        await stream.writeSSE({
+          event: 'hello',
+          data: JSON.stringify({
+            orgId,
+            serverStartedAt: SERVER_STARTED_AT,
+            heartbeatSeconds: deps.config.liveHeartbeatSeconds,
+          }),
+        });
+        // Nothing to do but stay open — every later frame is written by the
+        // subscription or the heartbeat above.
+        await new Promise<void>((resolve) => stream.onAbort(resolve));
+      } finally {
+        cleanup();
+      }
+    });
   });
 
   return api;

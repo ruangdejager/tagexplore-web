@@ -11,6 +11,43 @@ function timestamp(ms: number): string {
   return new Date(ms).toLocaleString('en-ZA', { timeZone: 'Africa/Johannesburg', hour12: false });
 }
 
+/**
+ * What the reader's position actually is, for the discovery being shown.
+ *
+ * The distinction this makes is the whole point of the row: a fix from four
+ * hours before the round is not this round's position, and saying "4h ago" as
+ * though it were invites exactly the wrong conclusion about where the reader
+ * was. So an inapplicable fix is labelled as such and dimmed, with the gap
+ * spelled out underneath.
+ */
+function FixValue({ device, now }: { device: DeviceRow; now: number }): JSX.Element {
+  if (device.positionSource === 'linked-tag') {
+    return (
+      <dd>
+        via tag {device.positionTagId}
+        <div className="position-note">the reader's own fix was not from this round</div>
+      </dd>
+    );
+  }
+
+  if (device.positionSource === 'stale') {
+    return (
+      <dd className="position-stale">
+        not applicable
+        {device.positionAt !== null && device.discoveryAt !== null && (
+          <div className="position-note">
+            last fix {formatAge(Math.abs(device.discoveryAt - device.positionAt))}{' '}
+            {device.positionAt < device.discoveryAt ? 'before' : 'after'} this round
+          </div>
+        )}
+      </dd>
+    );
+  }
+
+  if (device.gpsUpdatedAt === null) return <dd>never reported</dd>;
+  return <dd>{formatAge(now - device.gpsUpdatedAt)} ago</dd>;
+}
+
 /** Metadata for one reader — the map's click-to-inspect for devices, same corner and card styling as a tag's. */
 export function DeviceCard({ device, now, onClose }: Props): JSX.Element {
   return (
@@ -35,18 +72,29 @@ export function DeviceCard({ device, now, onClose }: Props): JSX.Element {
         )}
 
         <dt>Radio ID</dt>
-        <dd>{device.radioId ?? '—'}</dd>
+        <dd>
+          {device.radioId ?? '—'}
+          {device.radioIdSource === 'auto' && <span className="identity-badge">auto</span>}
+        </dd>
+
+        <dt>Carried tag</dt>
+        <dd>
+          {device.carriedTagId ?? '—'}
+          {device.carriedTagSource === 'auto' && <span className="identity-badge">auto</span>}
+        </dd>
 
         <dt>Firmware</dt>
         <dd>{device.readerFw ?? '—'}</dd>
 
         <dt>Fix</dt>
-        <dd>{device.gpsUpdatedAt === null ? 'never reported' : `${formatAge(now - device.gpsUpdatedAt)} ago`}</dd>
+        <FixValue device={device} now={now} />
 
         {device.gpsUpdatedAt !== null && (
           <>
             <dt>Reported</dt>
-            <dd style={{ fontSize: 11 }}>{timestamp(device.gpsUpdatedAt)}</dd>
+            <dd style={{ fontSize: 11 }} className={device.positionSource === 'stale' ? 'position-stale' : undefined}>
+              {timestamp(device.gpsUpdatedAt)}
+            </dd>
           </>
         )}
       </dl>

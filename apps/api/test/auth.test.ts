@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AuthUser, DiscoveryDetail } from '@tagexplore/core';
 import { loadConfig, type Config } from '../src/config.js';
 import { Store } from '../src/db/index.js';
+import { createLiveBus, type LiveBus } from '../src/events/bus.js';
 import { createAccountApi } from '../src/routes/account.js';
 import { createAdminApi } from '../src/routes/admin.js';
 import { createApi } from '../src/routes/api.js';
@@ -14,18 +15,20 @@ import { createAuthApi } from '../src/routes/auth.js';
 let dir: string;
 let store: Store;
 let config: Config;
+let bus: LiveBus;
 let app: Hono;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'tagexplore-auth-'));
   store = new Store(join(dir, 'test.db'), 'founder');
   config = loadConfig();
+  bus = createLiveBus();
 
   app = new Hono();
   app.route('/api/auth', createAuthApi({ store, cookieSecure: false }));
   app.route('/api/account', createAccountApi({ store }));
-  app.route('/api/admin', createAdminApi({ store, config }));
-  app.route('/api', createApi({ store, config }));
+  app.route('/api/admin', createAdminApi({ store, config, bus }));
+  app.route('/api', createApi({ store, config, bus }));
 });
 
 afterEach(() => {
@@ -388,7 +391,7 @@ describe('user preferences', () => {
     const res = await get('/api/account/preferences', cookie);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
-      preferences: { hiddenTagIds: [], colorMode: 'discovery', lastOrgId: null, geofencesView: false, hiddenDeviceImeis: [] },
+      preferences: { colorMode: 'discovery', lastOrgId: null, geofencesView: false, hiddenDeviceImeis: [] },
     });
   });
 
@@ -397,7 +400,6 @@ describe('user preferences', () => {
     const saved = await put(
       '/api/account/preferences',
       {
-        hiddenTagIds: ['3E1E', '441F'],
         colorMode: 'latestGps',
         lastOrgId: 'org-a',
         geofencesView: true,
@@ -410,7 +412,6 @@ describe('user preferences', () => {
     const res = await get('/api/account/preferences', cookie);
     expect(await res.json()).toEqual({
       preferences: {
-        hiddenTagIds: ['3E1E', '441F'],
         colorMode: 'latestGps',
         lastOrgId: 'org-a',
         geofencesView: true,
@@ -421,11 +422,29 @@ describe('user preferences', () => {
 
   it('defaults a preferences row saved before geofencesView/hiddenDeviceImeis existed to "off"/"none hidden" rather than resetting it', async () => {
     const cookie = await signup('shepherd');
-    await put('/api/account/preferences', { hiddenTagIds: ['3E1E'], colorMode: 'age', lastOrgId: 'org-a' }, cookie);
+    await put('/api/account/preferences', { colorMode: 'age', lastOrgId: 'org-a' }, cookie);
 
     const res = await get('/api/account/preferences', cookie);
     expect(await res.json()).toEqual({
-      preferences: { hiddenTagIds: ['3E1E'], colorMode: 'age', lastOrgId: 'org-a', geofencesView: false, hiddenDeviceImeis: [] },
+      preferences: { colorMode: 'age', lastOrgId: 'org-a', geofencesView: false, hiddenDeviceImeis: [] },
+    });
+  });
+
+  // Tags moved from here to `org_tags.hidden`, so a row still carrying the old
+  // field has to keep validating — otherwise every existing user's colour mode
+  // and remembered org would reset along with it.
+  it('ignores a leftover hiddenTagIds rather than rejecting the whole row', async () => {
+    const cookie = await signup('shepherd');
+    const saved = await put(
+      '/api/account/preferences',
+      { hiddenTagIds: ['3E1E'], colorMode: 'age', lastOrgId: 'org-a' },
+      cookie,
+    );
+    expect(saved.status).toBe(200);
+
+    const res = await get('/api/account/preferences', cookie);
+    expect(await res.json()).toEqual({
+      preferences: { colorMode: 'age', lastOrgId: 'org-a', geofencesView: false, hiddenDeviceImeis: [] },
     });
   });
 
@@ -434,13 +453,13 @@ describe('user preferences', () => {
     const otherCookie = await signup('other');
     await put(
       '/api/account/preferences',
-      { hiddenTagIds: ['3E1E'], colorMode: 'age', lastOrgId: 'org-a', geofencesView: true, hiddenDeviceImeis: ['866049074634338'] },
+      { colorMode: 'age', lastOrgId: 'org-a', geofencesView: true, hiddenDeviceImeis: ['866049074634338'] },
       shepherdCookie,
     );
 
     const res = await get('/api/account/preferences', otherCookie);
     expect(await res.json()).toEqual({
-      preferences: { hiddenTagIds: [], colorMode: 'discovery', lastOrgId: null, geofencesView: false, hiddenDeviceImeis: [] },
+      preferences: { colorMode: 'discovery', lastOrgId: null, geofencesView: false, hiddenDeviceImeis: [] },
     });
   });
 
@@ -448,7 +467,7 @@ describe('user preferences', () => {
     const cookie = await signup('shepherd');
     const res = await put(
       '/api/account/preferences',
-      { hiddenTagIds: 'not-an-array', colorMode: 'age', lastOrgId: null },
+      { colorMode: 'not-a-legend', lastOrgId: null },
       cookie,
     );
     expect(res.status).toBe(400);
@@ -610,5 +629,147 @@ describe('GET /api/discovery-detail', () => {
 
   it('requires a session', async () => {
     expect((await get(`/api/discovery-detail?orgId=${ORG}&at=${BRACKET}`)).status).toBe(401);
+  });
+});
+
+describe('organisation-wide tag toggle', () => {
+  /** Two members of one organisation, so "does the other one see it" is askable. */
+  async function twoMembers(): Promise<{ first: string; second: string }> {
+    const first = await signup('shepherd');
+    const second = await signup('herder');
+    store.createOrg('org-a', 'Org A');
+    store.setUserOrgs(store.getUserByUsername('shepherd')!.id, ['org-a']);
+    store.setUserOrgs(store.getUserByUsername('herder')!.id, ['org-a']);
+    store.addOrgTags('org-a', ['3E1E', '441F']);
+    return { first, second };
+  }
+
+  const tagsOf = async (cookie: string): Promise<Array<{ tagId: string; hidden: boolean }>> =>
+    ((await (await get('/api/tags?orgId=org-a', cookie)).json()) as { tags: Array<{ tagId: string; hidden: boolean }> })
+      .tags;
+
+  it('starts with every tag switched on', async () => {
+    const { first } = await twoMembers();
+    expect(await tagsOf(first)).toMatchObject([{ tagId: '3E1E', hidden: false }, { tagId: '441F', hidden: false }]);
+  });
+
+  it('shows one member’s toggle to everyone else in the organisation', async () => {
+    // The whole point of moving this off a user preference: a count of 27/28
+    // that is really 27/27 has to read that way for everyone, not only for
+    // whoever noticed the dead tag.
+    const { first, second } = await twoMembers();
+
+    const res = await patch('/api/tags/3E1E?orgId=org-a', { hidden: true }, first);
+    expect(res.status).toBe(200);
+
+    expect(await tagsOf(second)).toMatchObject([{ tagId: '3E1E', hidden: true }, { tagId: '441F', hidden: false }]);
+  });
+
+  it('switches back on again', async () => {
+    const { first } = await twoMembers();
+    await patch('/api/tags/3E1E?orgId=org-a', { hidden: true }, first);
+    await patch('/api/tags/3E1E?orgId=org-a', { hidden: false }, first);
+    expect((await tagsOf(first))[0]).toMatchObject({ tagId: '3E1E', hidden: false });
+  });
+
+  it('announces the change, so other open browsers re-read', async () => {
+    const { first } = await twoMembers();
+    const seen: string[] = [];
+    bus.subscribe('org-a', (e) => seen.push(e.type));
+
+    await patch('/api/tags/3E1E?orgId=org-a', { hidden: true }, first);
+    expect(seen).toEqual(['tags']);
+  });
+
+  it('keeps organisations apart', async () => {
+    const { first } = await twoMembers();
+    const outsider = await signup('neighbour');
+    store.createOrg('org-b', 'Org B');
+    store.setUserOrgs(store.getUserByUsername('neighbour')!.id, ['org-b']);
+    store.addOrgTags('org-b', ['3E1E']);
+
+    await patch('/api/tags/3E1E?orgId=org-a', { hidden: true }, first);
+
+    const theirs = (await (await get('/api/tags?orgId=org-b', outsider)).json()) as {
+      tags: Array<{ hidden: boolean }>;
+    };
+    expect(theirs.tags[0]?.hidden).toBe(false);
+  });
+
+  it('refuses a tag this organisation has not claimed, and a body that says nothing', async () => {
+    const { first } = await twoMembers();
+    expect((await patch('/api/tags/9999?orgId=org-a', { hidden: true }, first)).status).toBe(404);
+    expect((await patch('/api/tags/3E1E?orgId=org-a', {}, first)).status).toBe(400);
+  });
+
+  it('refuses an organisation the user is not in, and requires a session', async () => {
+    await twoMembers();
+    const outsider = await signup('neighbour');
+    expect((await patch('/api/tags/3E1E?orgId=org-a', { hidden: true }, outsider)).status).toBe(403);
+    expect((await patch('/api/tags/3E1E?orgId=org-a', { hidden: true })).status).toBe(401);
+  });
+});
+
+describe('GET /api/events', () => {
+  it('requires a session', async () => {
+    expect((await get('/api/events')).status).toBe(401);
+  });
+
+  it('refuses an organisation the user is not in', async () => {
+    const cookie = await signup('shepherd');
+    store.createOrg('org-a', 'Org A');
+    store.createOrg('org-b', 'Org B');
+    store.setUserOrgs(store.getUserByUsername('shepherd')!.id, ['org-a']);
+
+    expect((await get('/api/events?orgId=org-b', cookie)).status).toBe(403);
+  });
+
+  it('opens a stream and greets with this process’s identity', async () => {
+    const cookie = await signup('shepherd');
+    store.createOrg('org-a', 'Org A');
+    store.setUserOrgs(store.getUserByUsername('shepherd')!.id, ['org-a']);
+
+    const res = await get('/api/events?orgId=org-a', cookie);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/event-stream');
+
+    const reader = res.body!.getReader();
+    try {
+      const { value } = await reader.read();
+      const frame = new TextDecoder().decode(value);
+      expect(frame).toContain('event: hello');
+      // `serverStartedAt` is what lets a reconnecting client tell "same
+      // process" from "redeployed while I was away".
+      expect(frame).toContain('serverStartedAt');
+      expect(frame).toContain('org-a');
+    } finally {
+      await reader.cancel();
+    }
+  });
+
+  it('delivers this organisation’s events and nobody else’s', async () => {
+    const cookie = await signup('shepherd');
+    store.createOrg('org-a', 'Org A');
+    store.setUserOrgs(store.getUserByUsername('shepherd')!.id, ['org-a']);
+
+    const res = await get('/api/events?orgId=org-a', cookie);
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    try {
+      await reader.read(); // the hello frame
+
+      bus.publish({ type: 'readings', orgId: 'org-b', imei: '1', at: Date.now() });
+      bus.publish({ type: 'readings', orgId: 'org-a', imei: '866049074634379', at: Date.now(), bracketAt: 42 });
+
+      const { value } = await reader.read();
+      const frame = decoder.decode(value);
+      // The org-b publish must not appear at all — the first frame after hello
+      // is the org-a one.
+      expect(frame).toContain('event: readings');
+      expect(frame).toContain('866049074634379');
+      expect(frame).not.toContain('org-b');
+    } finally {
+      await reader.cancel();
+    }
   });
 });

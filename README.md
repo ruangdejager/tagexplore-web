@@ -59,9 +59,91 @@ to that organisation's whitelist. Tags heard but not whitelisted show up in
 Admin → Tags as a queue to add with one click. Removing a tag drops the claim,
 not the readings — adding it back brings its whole history with it.
 
+Switching a whitelisted tag off in the main list is an **organisation** setting,
+not a personal one, and any member may do it. It usually means "this one is
+known to be inactive, stop counting it" — a fact about the tag rather than a
+preference of whoever noticed — so a count of 27/28 that is really 27/27 reads
+that way on every screen looking at that org, not only on the one that clicked.
+Which *devices* are switched off is still per-user: that one really is "what I
+want to look at right now".
+
+## Live updates
+
+The app has no Refresh button. New data announces itself: the API holds one
+server-sent-events stream per open browser (`GET /api/events`, org-scoped by
+the same session cookie as everything else), and a campaign landing on the
+server publishes a one-line signal that every browser watching that
+organisation answers by re-fetching. The frames carry no tag data, only "this
+org has something new", so filtering stays in exactly one place. A slow poll
+runs underneath as a fallback, which is what makes the app merely late rather
+than wrong behind a proxy that eats SSE — and the LIVE badge goes amber and
+says **reconnecting** when the stream is down, because with no button to fall
+back on a quietly dead page must not look like a quiet farm.
+
+## Ingest mode
+
+Two paths bring readings in, and a device does not need both:
+
+- **push** — the unit POSTs its tag-discovery campaign to us as CBOR (see
+  *Push ingest* below). Nothing is scheduled: the data arrives when it arrives.
+- **scrape** — we read the unit's syslog on the daily report schedule below.
+
+`devices.ingest_mode` is `auto` by default, which resolves to *push* while the
+unit has posted inside `PUSH_GRACE_MINUTES` (3 hours) and falls back to
+scraping when it goes quiet — and because a scrape starts from the device's
+newest stored bracket less the overlap, that fallback read backfills whatever
+the silence cost. An admin can pin either mode in Admin → Devices; a pinned
+`push` device never falls back, so its last-push time is shown in red once it
+passes the grace.
+
+## Reader position
+
+A reader never reports its own position in the discovery data — not in a
+scraped log block, not in a pushed campaign — so it is read off the events API
+(`GET <base><imei>/events`, newest event only, same bearer token as the
+settings API). That read used to ride along on a log scrape, which tied the
+purple marker to the scrape schedule and would have frozen it entirely for a
+push-only device. It now runs on its own every `POSITION_POLL_MINUTES`, for
+every active reader whatever its ingest mode, and a landing campaign asks for
+that reader's position straight away.
+
+A cached fix is not automatically that discovery's position. It counts only if
+it was reported within `DEVICE_POSITION_WINDOW_MINUTES` of the round — measured
+against the round's real arrival time when it was pushed, or its bracket (plus
+half a bracket of slack, since a bracket is not an exact time) when it was
+scraped. Failing that, the chain falls to the ordinary tag carried by the same
+animal as the reader, using its position *in that same round*; failing that,
+the last known position is shown greyed and not pinging, and link lines stop
+anchoring to it. The alternative — presenting a four-hour-old fix as where the
+reader is now — is the one outcome worth engineering against.
+
+## Learned device identities
+
+Two things about a reader are needed but reported nowhere usable, so both are
+worked out from the readings and both can be overridden by hand. A hand-typed
+value is latched `manual` and inference never writes through it; clearing the
+field hands it back. Admin → Devices shows every candidate with its evidence
+and the reason it was or wasn't chosen.
+
+- **Radio ID** — the id a tag names in its `RssiSrc` column when its data
+  reached the reader directly. A pushed campaign states it outright
+  (`primaryDeviceId`), so for a pushing unit this is reported, not guessed. A
+  scraped one is voted on: everything heard on wave one reached the reader
+  directly, so its `RssiSrc` names the reader — except that a candidate this
+  same device *also heard as a tag* is a relay, since a reader never appears in
+  its own discovery list.
+- **Carried tag** — the ordinary tag on the same animal that carries the
+  reader, which is what stands in when the reader's own fix does not apply. It
+  is scored on being in every round, always on wave one, very strong and very
+  stable, and is rejected if another reader in the org hears it just as well.
+
+Where two answers are both real — two primaries reporting through one IMEI, or
+two tags scoring alike — nothing is chosen and both are surfaced. Guessing
+between two plausible answers is worse than saying there are two.
+
 ## Ingest schedule
 
-Polling follows each device's own daily report schedule, read from the settings
+Scraping follows each device's own daily report schedule, read from the settings
 API (`GET <base><imei>/settings`, bearer token):
 
 ```

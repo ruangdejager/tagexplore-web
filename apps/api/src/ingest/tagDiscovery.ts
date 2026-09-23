@@ -44,6 +44,7 @@ import { decode } from 'cbor2';
 import { formatTagId, type TagReading } from '@tagexplore/core';
 import type { Config } from '../config.js';
 import type { ReadingInput, Store } from '../db/index.js';
+import type { LiveBus } from '../events/bus.js';
 
 export const MODE_ADVANCED = 0;
 export const MODE_BASIC = 1;
@@ -318,11 +319,15 @@ export function storeTagDiscovery(
   campaign: TagDiscoveryCampaign,
   receivedAtMs: number,
   byteCount: number,
+  bus?: LiveBus,
 ): TagDiscoveryStoreResult {
   // A reading row is foreign-keyed to `devices`, so an unregistered IMEI has
   // nowhere to go. Reported rather than thrown: the unit gets its 200 either
   // way, and the campaign is still in its flash syslog for the scraped path.
-  if (!store.getDevice(imei)) return { outcome: 'unknown-device', readingsWritten: 0, bracketAt: null };
+  // The row is kept rather than discarded — it carries the organisation the
+  // live event has to be published to.
+  const device = store.getDevice(imei);
+  if (!device) return { outcome: 'unknown-device', readingsWritten: 0, bracketAt: null };
 
   const bracketAt = bracketForSession(campaign.sessionUtc, receivedAtMs, config.bracketMinutes);
   if (bracketAt === null) return { outcome: 'bad-clock', readingsWritten: 0, bracketAt: null };
@@ -348,6 +353,9 @@ export function storeTagDiscovery(
   const result = store.writeTagDiscoveryPost({
     deviceImei: imei,
     primaryDeviceId: campaign.primaryDeviceId,
+    // This *is* the reader's radio id, reported rather than inferred — the
+    // store records it as exact evidence alongside the receipt.
+    primaryTagId: campaign.primaryTagId,
     sessionUtc: campaign.sessionUtc,
     receivedAt: receivedAtMs,
     bracketAt,
@@ -377,6 +385,13 @@ export function storeTagDiscovery(
       receivedAt: receivedAtMs,
     },
   });
+
+  // Only a genuinely new campaign is announced. The firmware retries once when
+  // our 200 is lost on the way back, and making every open browser refetch for
+  // a campaign it already has would be pure noise.
+  if (!result.duplicate) {
+    bus?.publish({ type: 'readings', orgId: device.orgId, imei, at: receivedAtMs, bracketAt });
+  }
 
   return {
     outcome: result.duplicate ? 'duplicate' : 'stored',

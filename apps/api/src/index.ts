@@ -9,6 +9,7 @@ import { logger } from 'hono/logger';
 import { ensureFoundingAdmin } from './auth/foundingAdmin.js';
 import { loadConfig } from './config.js';
 import { Store } from './db/index.js';
+import { createLiveBus } from './events/bus.js';
 import { createScheduler } from './ingest/scheduler.js';
 import { createAccountApi } from './routes/account.js';
 import { createAdminApi } from './routes/admin.js';
@@ -22,6 +23,12 @@ const store = new Store(config.dbPath, config.foundingAdminUsername);
 // Creates the account on a brand-new database (e.g. a fresh Railway volume);
 // a no-op once it already exists, from a signup or an earlier boot.
 await ensureFoundingAdmin(store, config.foundingAdminUsername, config.foundingAdminPassword);
+
+// Both are created before the routes, because the push-ingest route holds a
+// reference to each: a campaign landing has to signal the browsers watching
+// this organisation, and to ask for that reader's position to be re-read.
+const bus = createLiveBus();
+const scheduler = createScheduler(store, config, bus);
 
 const app = new Hono();
 
@@ -43,7 +50,7 @@ app.get('/api/health', (c) => c.json({ ok: true }));
 
 app.route('/api/auth', createAuthApi({ store, cookieSecure }));
 app.route('/api/account', createAccountApi({ store }));
-app.route('/api/admin', createAdminApi({ store, config }));
+app.route('/api/admin', createAdminApi({ store, config, bus }));
 // The Telegram bot's two surfaces: a per-org read API (bearer bot token) and a
 // server-to-server provisioning API (shared BOT_PROVISION_TOKEN). Registered
 // before the catch-all `/api` so their paths aren't shadowed by it.
@@ -54,8 +61,8 @@ app.route('/api/provision', createProvisionApi({ store, config }));
 // reason as the two above — the catch-all `/api` below would shadow the path.
 // Unauthenticated by necessity: the firmware's POST path sends no headers at
 // all, so the IMEI in the path is the only identification there is.
-app.route('/api/v2018-02-04/units', createTagDiscoveryApi({ store, config }));
-app.route('/api', createApi({ store, config }));
+app.route('/api/v2018-02-04/units', createTagDiscoveryApi({ store, config, bus, scheduler }));
+app.route('/api', createApi({ store, config, bus }));
 
 // --- Static hosting -------------------------------------------------------
 // In development Vite serves the front end and proxies /api here, so this only
@@ -81,7 +88,6 @@ if (hasWebBuild) {
   );
 }
 
-const scheduler = createScheduler(store, config);
 scheduler.start();
 
 const pruneTimer = setInterval(() => {

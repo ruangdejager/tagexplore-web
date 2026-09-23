@@ -1,6 +1,7 @@
 import type {
   AuthUser,
   BatterySeries,
+  DeviceIdentityCandidate,
   DeviceRow,
   DiscoveryCountPoint,
   DiscoveryDetail,
@@ -24,6 +25,7 @@ import type {
 export type {
   AuthUser,
   BatterySeries,
+  DeviceIdentityCandidate,
   DeviceRow,
   DiscoveryCountPoint,
   DiscoveryDetail,
@@ -174,6 +176,14 @@ export const fetchDiscoveryDetail = (
 export const fetchOrgTags = (orgId: string | null): Promise<{ tags: OrgTagRow[] }> =>
   request(scoped('/api/tags', orgId));
 
+/**
+ * Switches a tag off, or back on, for the whole organisation — not just for
+ * this browser. Returns the full list so the caller never has to guess what
+ * the server now thinks.
+ */
+export const setOrgTagHidden = (orgId: string | null, tagId: string, hidden: boolean): Promise<{ tags: OrgTagRow[] }> =>
+  request(scoped(`/api/tags/${tagId}`, orgId), { method: 'PATCH', ...json({ hidden }) });
+
 export const fetchDevices = (orgId: string | null): Promise<{ devices: DeviceRow[] }> =>
   request(scoped('/api/devices', orgId));
 
@@ -185,15 +195,11 @@ export const fetchGeofences = (orgId: string | null): Promise<{ geofences: Geofe
   request(scoped('/api/geofences', orgId));
 
 /**
- * A live pull — schedule, log, position, geofences — for every one of this
- * organisation's readers, not just a re-read of the database. The caller
- * still needs to re-fetch snapshots/devices/geofences afterward to actually
- * see what changed.
+ * The live stream's URL. `EventSource` is given a URL rather than going
+ * through `request`, so this exists to keep `scoped` module-private while
+ * still applying the same org-id convention every other call uses.
  */
-export const refreshAll = (
-  orgId: string | null,
-): Promise<{ devices: Array<{ imei: string; ok: boolean; error: string | null }> }> =>
-  request(scoped('/api/refresh', orgId), { method: 'POST' });
+export const liveEventsUrl = (orgId: string | null): string => scoped('/api/events', orgId);
 
 export const fetchBattery = (
   orgId: string | null,
@@ -248,7 +254,9 @@ export const createDevice = (
   orgId: string,
   label: string,
   radioId: string,
-): Promise<{ device: DeviceRow }> => request('/api/admin/devices', { method: 'POST', ...json({ imei, orgId, label, radioId }) });
+  carriedTagId: string,
+): Promise<{ device: DeviceRow }> =>
+  request('/api/admin/devices', { method: 'POST', ...json({ imei, orgId, label, radioId, carriedTagId }) });
 
 export const updateDevice = (
   imei: string,
@@ -262,10 +270,22 @@ export const updateDevice = (
       | 'reportIntervalMinutes'
       | 'reportCountPerDay'
       | 'pollOffsetMinutes'
+      | 'ingestMode'
       | 'radioId'
+      | 'carriedTagId'
     >
   >,
 ): Promise<{ device: DeviceRow }> => request(`/api/admin/devices/${imei}`, { method: 'PATCH', ...json(patch) });
+
+/** What the inference has to go on for one reader, and why it did or didn't choose each candidate. */
+export const fetchDeviceIdentity = (imei: string): Promise<{ candidates: DeviceIdentityCandidate[] }> =>
+  request(`/api/admin/devices/${imei}/identity`);
+
+/** Re-runs that inference now, rather than waiting for the scheduler's own interval. */
+export const reinferDeviceIdentity = (
+  imei: string,
+): Promise<{ device: DeviceRow; candidates: DeviceIdentityCandidate[] }> =>
+  request(`/api/admin/devices/${imei}/identity/reinfer`, { method: 'POST' });
 
 export const deleteDevice = (imei: string): Promise<{ ok: true }> =>
   request(`/api/admin/devices/${imei}`, { method: 'DELETE' });

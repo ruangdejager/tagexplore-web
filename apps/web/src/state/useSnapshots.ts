@@ -3,11 +3,17 @@ import type { DeviceRow, LinkReading, TagSnapshot } from '@tagexplore/core';
 import * as api from '../api.js';
 
 /**
- * Ingest happens on the devices' own schedule — typically once an hour — so
- * there is nothing to gain from polling harder than this. A minute is short
- * enough that a page left open on a wall display stays honest.
+ * New data announces itself over `/api/events` now, so polling is a fallback
+ * rather than the mechanism: a minute while the stream is down, and a lazy
+ * five while it is up.
+ *
+ * The slow poll is deliberately kept rather than dropped when connected. It
+ * covers a publish that happened while the stream was mid-reconnect, and it is
+ * what makes the app merely *slow* rather than *wrong* behind a proxy that
+ * eats server-sent events.
  */
 const REFRESH_MS = 60_000;
+const SLOW_REFRESH_MS = 5 * 60_000;
 
 export interface SnapshotState {
   snapshots: TagSnapshot[];
@@ -33,6 +39,10 @@ export function useSnapshots(
   hours: number,
   enabled: boolean,
   excludeDeviceImeis?: string[],
+  /** Bumped by `useLiveEvents` whenever the server says this org has new data. */
+  liveNonce = 0,
+  /** Whether that stream is up — decides which of the two poll cadences applies. */
+  liveConnected = false,
 ): SnapshotState {
   const [snapshots, setSnapshots] = useState<TagSnapshot[]>([]);
   const [links, setLinks] = useState<LinkReading[]>([]);
@@ -86,13 +96,13 @@ export function useSnapshots(
     return () => {
       cancelled = true;
     };
-  }, [orgId, hours, enabled, nonce, excludeDeviceImeisKey]);
+  }, [orgId, hours, enabled, nonce, liveNonce, excludeDeviceImeisKey]);
 
   useEffect(() => {
     if (!enabled) return;
-    const timer = setInterval(refresh, REFRESH_MS);
+    const timer = setInterval(refresh, liveConnected ? SLOW_REFRESH_MS : REFRESH_MS);
     return () => clearInterval(timer);
-  }, [enabled, refresh]);
+  }, [enabled, refresh, liveConnected]);
 
   return { snapshots, links, devices, from: range.from, to: range.to, loading, hasLoaded: enabled && loadedOrgId === orgId, error, refresh };
 }

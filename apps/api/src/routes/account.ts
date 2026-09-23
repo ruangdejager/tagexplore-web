@@ -4,7 +4,6 @@ import { currentUser } from '../auth/session.js';
 import type { Store } from '../db/index.js';
 
 const DEFAULT_PREFERENCES: UserPreferences = {
-  hiddenTagIds: [],
   colorMode: 'discovery',
   lastOrgId: null,
   geofencesView: false,
@@ -15,6 +14,11 @@ const DEFAULT_PREFERENCES: UserPreferences = {
 // preferences row saved before either field existed has no such key, and
 // should still validate — read back as "off"/"none hidden", not fall through
 // to every other saved preference resetting too.
+//
+// A stored `hiddenTagIds` is ignored rather than rejected, for the same
+// reason in the other direction: every existing row still has one, it was
+// migrated into `org_tags.hidden` on boot, and failing validation over it
+// would reset the colour mode and remembered org along with it.
 function isUserPreferences(
   value: unknown,
 ): value is Omit<UserPreferences, 'geofencesView' | 'hiddenDeviceImeis'> & {
@@ -24,8 +28,6 @@ function isUserPreferences(
   if (!value || typeof value !== 'object') return false;
   const v = value as Record<string, unknown>;
   return (
-    Array.isArray(v['hiddenTagIds']) &&
-    v['hiddenTagIds'].every((id) => typeof id === 'string') &&
     (v['colorMode'] === 'age' || v['colorMode'] === 'latestGps' || v['colorMode'] === 'discovery') &&
     (v['lastOrgId'] === null || typeof v['lastOrgId'] === 'string') &&
     (v['geofencesView'] === undefined || typeof v['geofencesView'] === 'boolean') &&
@@ -89,7 +91,12 @@ export function createAccountApi(deps: AccountDeps): Hono<Env> {
     const raw = deps.store.getUserPreferences(c.get('userId'));
     const parsed: unknown = raw ? JSON.parse(raw) : null;
     const preferences: UserPreferences = isUserPreferences(parsed)
-      ? { ...parsed, geofencesView: parsed.geofencesView ?? false, hiddenDeviceImeis: parsed.hiddenDeviceImeis ?? [] }
+      ? {
+          colorMode: parsed.colorMode,
+          lastOrgId: parsed.lastOrgId,
+          geofencesView: parsed.geofencesView ?? false,
+          hiddenDeviceImeis: parsed.hiddenDeviceImeis ?? [],
+        }
       : DEFAULT_PREFERENCES;
     return c.json({ preferences });
   });

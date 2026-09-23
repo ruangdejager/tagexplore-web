@@ -1,7 +1,9 @@
 import { mergeSessions, parseLogText, type DiscoveryBlock, type DiscoverySession } from '@tagexplore/core';
 import type { Config } from '../config.js';
 import type { ReadingInput, RoundInput, Store } from '../db/index.js';
-import { fetchDeviceEventData, fetchDeviceSchedule, fetchUnitLogText } from './farmrangerClient.js';
+import type { LiveBus } from '../events/bus.js';
+import { fetchDeviceSchedule, fetchUnitLogText } from './farmrangerClient.js';
+import { pollDevicePosition } from './position.js';
 
 export interface IngestResult {
   imei: string;
@@ -125,7 +127,13 @@ function storeBlocks(store: Store, config: Config, imei: string, blocks: Discove
  * request; one that has reported before is read from its newest bracket less
  * the configured overlap.
  */
-export async function ingestDevice(store: Store, config: Config, imei: string, now = new Date()): Promise<IngestResult> {
+export async function ingestDevice(
+  store: Store,
+  config: Config,
+  imei: string,
+  now = new Date(),
+  bus?: LiveBus,
+): Promise<IngestResult> {
   const runId = store.startIngestRun(imei);
   const latest = store.latestBracketFor(imei);
 
@@ -148,19 +156,12 @@ export async function ingestDevice(store: Store, config: Config, imei: string, n
     store.finishIngestRun(runId, 'ok', { blocksParsed, readingsWritten });
     store.markDeviceIngest(imei, Date.now(), 'ok');
 
-    // The reader's own position, and every geofence it knows about, aren't in
-    // the logs at all — both are read off a separate API — best-effort: a
-    // failure here (no token configured, the events API down) shouldn't fail
-    // an otherwise-successful log ingest.
-    try {
-      const { position, geofences } = await fetchDeviceEventData(config, imei);
-      if (position) store.setDevicePosition(imei, position.lat, position.lon, position.reportedAt);
-      if (geofences.length > 0) {
-        const device = store.getDevice(imei);
-        if (device) store.upsertGeofences(device.orgId, geofences);
-      }
-    } catch {
-      // Ignored — see above.
+    // Published once here rather than inside the chunk loop: a seven-day
+    // backfill is seven `ingestRange` calls, and the browser only needs to be
+    // told the device is done, not counted through.
+    if (readingsWritten > 0) {
+      const device = store.getDevice(imei);
+      if (device) bus?.publish({ type: 'readings', orgId: device.orgId, imei, at: Date.now() });
     }
 
     return { imei, blocksParsed, readingsWritten, from: start, to: now };
@@ -173,16 +174,23 @@ export async function ingestDevice(store: Store, config: Config, imei: string, n
 }
 
 /**
- * Everything a manual refresh means for one device: its schedule (in case an
- * admin changed it on the platform since we last checked), its log (tag
- * readings), and — inside `ingestDevice` — its own position and geofences.
- * Used by both the admin's per-device "Read now" and the main app's org-wide
- * "Refresh", so either one is a genuine live pull, not just a re-read of
- * whatever is already in the database.
+ * Everything the admin's per-device "Read now" means: the device's schedule
+ * (in case an admin changed it on the platform since we last checked), its
+ * log, and its own position and geofences.
+ *
+ * The position read is spelled out here rather than left to the scheduler's
+ * own cadence, and it deliberately bypasses that cadence's debounce — "Read
+ * now" has to mean everything, now, or it is no use as the thing you reach for
+ * when a reader looks stuck.
  */
-export async function refreshDeviceFully(store: Store, config: Config, imei: string, now = new Date()): Promise<IngestResult> {
-  // Best-effort and silent, same reasoning as the position/geofences fetch
-  // inside `ingestDevice`: a settings API hiccup should not stop the log
+export async function refreshDeviceFully(
+  store: Store,
+  config: Config,
+  imei: string,
+  now = new Date(),
+  bus?: LiveBus,
+): Promise<IngestResult> {
+  // Best-effort and silent: a settings API hiccup should not stop the log
   // ingest that actually matters more.
   try {
     const schedule = await fetchDeviceSchedule(config, imei);
@@ -190,5 +198,7 @@ export async function refreshDeviceFully(store: Store, config: Config, imei: str
   } catch {
     // Ignored — see above.
   }
-  return ingestDevice(store, config, imei, now);
+  const result = await ingestDevice(store, config, imei, now, bus);
+  await pollDevicePosition(store, config, bus, imei);
+  return result;
 }

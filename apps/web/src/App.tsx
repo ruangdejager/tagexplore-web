@@ -25,6 +25,7 @@ import { TagList } from './components/TagList.js';
 import { ViewPanel, type MainView } from './components/ViewPanel.js';
 import { useAuth } from './state/useAuth.js';
 import { useHeatPoints } from './state/useHeatPoints.js';
+import { useLiveEvents } from './state/useLiveEvents.js';
 import { useSnapshots } from './state/useSnapshots.js';
 
 /**
@@ -78,7 +79,6 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   const [loadedWhitelistOrgId, setLoadedWhitelistOrgId] = useState<string | null>(null);
   const [viewOrgId, setViewOrgId] = useState<string | null>(null);
   const [query, setQuery] = useState('');
-  const [hiddenFromMap, setHiddenFromMap] = useState<Set<string>>(new Set());
   // Devices switched off in the main list — excluded from every reading
   // everywhere (map, tag list, counts, history), not just hidden from the
   // map the way a tag toggle is. Persisted the same way `hiddenFromMap` is.
@@ -90,9 +90,6 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   // preferences load/save effects below.
   const [geofencesView, setGeofencesView] = useState(false);
   const [geofences, setGeofences] = useState<GeofenceRegion[]>([]);
-  // True while "Refresh" is out live-pulling every device — not the same as
-  // `loading` below, which just reflects the follow-up DB re-read.
-  const [refreshingAll, setRefreshingAll] = useState(false);
   const [heatmapHours, setHeatmapHours] = useState(72);
   const [colorMode, setColorMode] = useState<MarkerColorMode>('discovery');
   const [discoveryWindow, setDiscoveryWindow] = useState<DiscoveryWindow>('6');
@@ -149,11 +146,17 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   // Tags are never time-filtered — every whitelisted tag always shows its
   // latest known state, so the fetch window here is just a generous ceiling,
   // not a user-facing setting. The heatmap gets its own window below.
+  // New data announces itself rather than being polled for: a campaign landing
+  // on the server bumps `dataNonce`, which is what the fetch below re-runs on.
+  // The poll underneath it is a fallback, not the mechanism.
+  const live = useLiveEvents(orgId, canSeeData);
   const { snapshots, links, devices, loading, hasLoaded, error, refresh } = useSnapshots(
     orgId,
     SNAPSHOT_WINDOW_HOURS,
     canSeeData,
     excludeDeviceImeis,
+    live.dataNonce,
+    live.connected,
   );
   const heatPoints = useHeatPoints(orgId, heatmapHours, heatmapView);
 
@@ -231,6 +234,9 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
       .finally(() => setOrgsLoaded(true));
   }, [isAdmin, showAdmin]);
 
+  // Re-fetched on `tagNonce` too, because a tag switched off is now an
+  // organisation-wide change: whoever else has this org open has to see the
+  // count move, not just the browser that clicked.
   useEffect(() => {
     if (!canSeeData) return;
     api
@@ -238,7 +244,18 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
       .then((res) => setWhitelist(res.tags))
       .catch(() => setWhitelist([]))
       .finally(() => setLoadedWhitelistOrgId(orgId));
-  }, [canSeeData, orgId]);
+  }, [canSeeData, orgId, live.tagNonce]);
+
+  /**
+   * Which tags are switched off, straight off the whitelist rather than held
+   * separately — there is one answer per organisation now, and it lives on the
+   * server, so keeping a local copy in step would be the only way to get it
+   * wrong.
+   */
+  const hiddenFromMap = useMemo(
+    () => new Set(whitelist.filter((t) => t.hidden).map((t) => t.tagId)),
+    [whitelist],
+  );
 
   // Loads once per organisation, and again whenever "Refresh" pulls fresh
   // ones in from the platform — pulled out to a function rather than left
@@ -249,7 +266,9 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
       return;
     }
     api.fetchGeofences(orgId).then((res) => setGeofences(res.geofences)).catch(() => setGeofences([]));
-  }, [canSeeData, orgId]);
+    // `geofenceNonce` is in the dependency list, not the body: a reader's
+    // events feed carries its geofences, so they change when it is re-read.
+  }, [canSeeData, orgId, live.geofenceNonce]);
 
   useEffect(loadGeofences, [loadGeofences]);
 
@@ -263,7 +282,6 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
       .fetchPreferences()
       .then((res) => {
         if (cancelled) return;
-        setHiddenFromMap(new Set(res.preferences.hiddenTagIds));
         setColorMode(res.preferences.colorMode);
         setSavedOrgId(res.preferences.lastOrgId);
         setGeofencesView(res.preferences.geofencesView);
@@ -306,14 +324,13 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
     if (!prefsLoaded) return;
     void api
       .savePreferences({
-        hiddenTagIds: [...hiddenFromMap],
         colorMode,
         lastOrgId: orgId,
         geofencesView,
         hiddenDeviceImeis: [...hiddenDeviceImeis],
       })
       .catch(() => {});
-  }, [prefsLoaded, hiddenFromMap, colorMode, orgId, geofencesView, hiddenDeviceImeis]);
+  }, [prefsLoaded, colorMode, orgId, geofencesView, hiddenDeviceImeis]);
 
   // Every tag starts toggled on in the battery trend, once per organisation —
   // not on every whitelist refetch, so a deliberate "None" or a manual toggle
@@ -395,14 +412,27 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   const selectedDeviceSource = historyAt !== null && historyDevices !== null ? historyDevices : devices;
   const selectedDevice = selectedDeviceSource.find((d) => d.imei === selectedDeviceImei) ?? null;
 
-  const toggleMapVisibility = useCallback((tagId: string): void => {
-    setHiddenFromMap((prev) => {
-      const next = new Set(prev);
-      if (next.has(tagId)) next.delete(tagId);
-      else next.add(tagId);
-      return next;
-    });
-  }, []);
+  /**
+   * Switching a tag off is a write, not a local toggle. It says "this one is
+   * known to be inactive — stop counting it", which is true for the whole
+   * organisation, so 27/28 becomes 27/27 on every screen looking at this org
+   * rather than only on the one that clicked.
+   *
+   * The list the server returns is applied directly instead of being guessed
+   * at first: the round trip is one small request, and an optimistic update
+   * here would be a second place for the answer to live.
+   */
+  const toggleMapVisibility = useCallback(
+    (tagId: string): void => {
+      if (!orgId) return;
+      const hidden = !hiddenFromMap.has(tagId);
+      void api
+        .setOrgTagHidden(orgId, tagId, hidden)
+        .then((res) => setWhitelist(res.tags))
+        .catch(() => {});
+    },
+    [orgId, hiddenFromMap],
+  );
 
   const toggleDevice = useCallback((imei: string): void => {
     setHiddenDeviceImeis((prev) => {
@@ -440,26 +470,6 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
       return next;
     });
   }, []);
-
-  // "Refresh" means a real, live pull — not just a re-read of whatever's
-  // already in the database. It goes out to every one of this org's readers
-  // for their schedule, their log, and (same call as the log) their own
-  // position and geofences — the purple marker updates on this same click,
-  // not on some separate cadence. The DB re-read happens regardless of
-  // whether the live pull fully succeeded, so a partial failure still shows
-  // whatever did come in rather than nothing at all.
-  const handleRefresh = useCallback((): void => {
-    if (!orgId || refreshingAll) return;
-    setRefreshingAll(true);
-    void api
-      .refreshAll(orgId)
-      .catch(() => {})
-      .then(() => {
-        refresh();
-        loadGeofences();
-      })
-      .finally(() => setRefreshingAll(false));
-  }, [orgId, refreshingAll, refresh, loadGeofences]);
 
   // Every hook above still runs on every render regardless — only the JSX
   // this returns is held back, so nothing half-loaded (the wrong org, an
@@ -515,16 +525,6 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
         <ViewPanel view={mainView} onChange={setMainView} />
         <div className="aside-body">
           <div className="filters">
-            <button
-              className="pill"
-              style={{ width: '100%' }}
-              onClick={handleRefresh}
-              disabled={refreshingAll}
-              title="Pull each reader's schedule, log, position and geofences fresh, then reload"
-            >
-              {refreshingAll ? 'Refreshing…' : 'Refresh'}
-            </button>
-
             <button
               className="pill"
               style={{ width: '100%' }}
@@ -641,6 +641,8 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
             excludeDeviceImeis={excludeDeviceImeis}
             canSeeRawData={canSeeRawData}
             onShowRaw={setRawDiscoveryAt}
+            liveNonce={live.dataNonce}
+            streamConnected={live.connected}
           />
           <AlertsPanel
             watchedTagIds={watchedTagIds}

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig, type Config } from '../src/config.js';
 import { Store, type RoundInput } from '../src/db/index.js';
+import { createLiveBus, type LiveEvent } from '../src/events/bus.js';
 import { bracketForSession, decodeTagDiscovery, formatPrimaryVersion, storeTagDiscovery } from '../src/ingest/tagDiscovery.js';
 import { createTagDiscoveryApi } from '../src/routes/tagDiscovery.js';
 
@@ -327,6 +328,46 @@ describe('storeTagDiscovery', () => {
   it('refuses a campaign stamped with an unset RTC', () => {
     const campaign = { ...decoded(EMPTY_CAMPAIGN), sessionUtc: 0 };
     expect(storeTagDiscovery(store, config, IMEI, campaign, NOW_MS, 21).outcome).toBe('bad-clock');
+  });
+
+  it('records the reported primary as exact evidence of this reader’s radio id', () => {
+    // A campaign states its own primary's LoRa id, which *is* the value
+    // `devices.radio_id` holds — so for a pushing unit this is not a guess.
+    storeTagDiscovery(store, config, IMEI, decoded(ADVANCED_TWO_RECORDS), NOW_MS, 65);
+    expect(store.listIdentityCandidates(IMEI, 'radio')).toMatchObject([{ exact: true, rounds: 1 }]);
+  });
+
+  describe('live announcements', () => {
+    function collect(): { bus: ReturnType<typeof createLiveBus>; seen: LiveEvent[] } {
+      const bus = createLiveBus();
+      const seen: LiveEvent[] = [];
+      bus.subscribe(ORG, (e) => seen.push(e));
+      return { bus, seen };
+    }
+
+    it('announces a stored campaign once, so open browsers re-read', () => {
+      const { bus, seen } = collect();
+      storeTagDiscovery(store, config, IMEI, decoded(ADVANCED_TWO_RECORDS), NOW_MS, 65, bus);
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toMatchObject({ type: 'readings', orgId: ORG, imei: IMEI });
+    });
+
+    it('says nothing about a retried campaign', () => {
+      // Otherwise the firmware's retry-on-lost-200 would make every open
+      // browser re-fetch for data it already has.
+      const { bus, seen } = collect();
+      const campaign = decoded(ADVANCED_TWO_RECORDS);
+      storeTagDiscovery(store, config, IMEI, campaign, NOW_MS, 65, bus);
+      storeTagDiscovery(store, config, IMEI, campaign, NOW_MS + 5_000, 65, bus);
+      expect(seen).toHaveLength(1);
+    });
+
+    it('says nothing about a campaign it could not store', () => {
+      const { bus, seen } = collect();
+      storeTagDiscovery(store, config, UNKNOWN_IMEI, decoded(EMPTY_CAMPAIGN), NOW_MS, 21, bus);
+      storeTagDiscovery(store, config, IMEI, { ...decoded(EMPTY_CAMPAIGN), sessionUtc: 0 }, NOW_MS, 21, bus);
+      expect(seen).toEqual([]);
+    });
   });
 
   it('writes the campaign-reported duration onto a fresh round', () => {

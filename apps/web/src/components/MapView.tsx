@@ -5,6 +5,7 @@ import {
   AGE_COLOR,
   ageColor,
   checkedInTagIds,
+  type DevicePositionSource,
   type DeviceRow,
   type DiscoveryWindow,
   type GeofenceRegion,
@@ -137,13 +138,28 @@ const MOVEMENT_FRAME_INTERVAL_MS = 500;
 const DEVICE_ICON_SIZE = 26;
 const DEVICE_DOT_SIZE = 18;
 
-function deviceIcon(): L.DivIcon {
+/**
+ * The reader's marker. `positionSource` decides how it reads: `'own'` is the
+ * live purple landmark, `'linked-tag'` keeps the colour but goes dashed
+ * (still the reader, located by proxy), and `'stale'` greys out and stops
+ * pinging — a landmark that stops pulsing says "not current" before the colour
+ * has even registered.
+ */
+function deviceIcon(positionSource: DevicePositionSource): L.DivIcon {
+  const variant = positionSource === 'stale' ? ' stale' : positionSource === 'linked-tag' ? ' via-tag' : '';
   return L.divIcon({
-    className: 'device-marker-wrap',
+    className: `device-marker-wrap${variant}`,
     html: '<span class="device-marker-ping"></span><span class="device-marker-dot"></span>',
     iconSize: [DEVICE_ICON_SIZE, DEVICE_ICON_SIZE],
     iconAnchor: [DEVICE_ICON_SIZE / 2, DEVICE_ICON_SIZE / 2],
   });
+}
+
+/** The reason line under a reader's name in its tooltip — empty when the fix simply applies. */
+function positionNote(device: DeviceRow): string {
+  if (device.positionSource === 'stale') return ' · position not applicable to this round';
+  if (device.positionSource === 'linked-tag') return ` · via carried tag ${device.positionTagId ?? ''}`.trimEnd();
+  return '';
 }
 
 /** The "ball" travelling along a link line — plain positioning only; its
@@ -523,13 +539,17 @@ export function MapView({
 
     if (mode === 'global' && linkView && !heatmapView) {
       const byId = new Map(snapshots.map((t) => [t.tagId, t]));
+      // A reader whose position doesn't apply to this round is no use as a
+      // line's anchor: the line would run to somewhere the reader demonstrably
+      // wasn't, and a wrong line is worse than a missing one.
+      const anchorable = devices.filter(
+        (d): d is DeviceRow & { lat: number; lon: number } =>
+          d.lat !== null && d.lon !== null && d.positionSource !== 'stale',
+      );
       const deviceByRadioId = new Map(
-        devices.filter((d): d is DeviceRow & { radioId: string; lat: number; lon: number } => d.radioId !== null && d.lat !== null && d.lon !== null)
-          .map((d) => [d.radioId, d]),
+        anchorable.filter((d): d is typeof d & { radioId: string } => d.radioId !== null).map((d) => [d.radioId, d]),
       );
-      const deviceByImei = new Map(
-        devices.filter((d): d is DeviceRow & { lat: number; lon: number } => d.lat !== null && d.lon !== null).map((d) => [d.imei, d]),
-      );
+      const deviceByImei = new Map(anchorable.map((d) => [d.imei, d]));
 
       // One row per (tag, device) that heard it in the latest round — not
       // collapsed to one row per tag like `snapshots` — so a tag two readers
@@ -562,8 +582,12 @@ export function MapView({
           ],
           {
             color: LINK_COLOR,
-            weight: 2,
-            opacity: 0.85,
+            // Barely there on purpose. With a line per (tag, reader) pair, a
+            // busy round turns into a thicket that hides the very positions it
+            // is drawn over — so the lines say only "these two are connected",
+            // and the travelling ball carries the direction and the liveness.
+            weight: 1,
+            opacity: 0.18,
             interactive: false,
             renderer: linkRenderer.current ?? undefined,
           },
@@ -599,7 +623,10 @@ export function MapView({
           seg.origin.lon + (seg.tag.lon - seg.origin.lon) * eased,
         ]);
         const el = seg.ball.getElement();
-        if (el) el.style.opacity = String(Math.max(0.12, fade));
+        // The floor is low enough that the ball nearly vanishes at the seam —
+        // against a line this faint, a ball that never fully fades reads as a
+        // scatter of dots rather than as something travelling.
+        if (el) el.style.opacity = String(Math.max(0.06, fade));
       }
       linkAnimFrame.current = requestAnimationFrame(animate);
     };
@@ -649,8 +676,12 @@ export function MapView({
     group.clearLayers();
     for (const device of devices) {
       if (device.lat === null || device.lon === null) continue;
-      const marker = L.marker([device.lat, device.lon], { icon: deviceIcon(), zIndexOffset: 1000 });
-      marker.bindTooltip(device.label ? `${device.label} · reader` : `Reader ${device.imei}`, {
+      const marker = L.marker([device.lat, device.lon], {
+        icon: deviceIcon(device.positionSource),
+        zIndexOffset: 1000,
+      });
+      const name = device.label ? `${device.label} · reader` : `Reader ${device.imei}`;
+      marker.bindTooltip(`${name}${positionNote(device)}`, {
         direction: 'top',
         offset: [0, -10],
       });

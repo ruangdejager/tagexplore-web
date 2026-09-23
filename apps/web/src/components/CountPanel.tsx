@@ -45,6 +45,14 @@ interface Props {
    * overlay opened from here would be trapped in the 272px card.
    */
   onShowRaw: (bracketAt: number) => void;
+  /**
+   * Bumped whenever the live stream says this org has new data. The history
+   * list needs it as well as `latestDiscoveryAt`, because a round that adds no
+   * *whitelisted* tag leaves that unchanged while still being a new row here.
+   */
+  liveNonce: number;
+  /** Whether the live stream is up — what the LIVE badge actually reports. */
+  streamConnected: boolean;
 }
 
 function timestamp(ms: number): string {
@@ -81,6 +89,8 @@ export function CountPanel({
   excludeDeviceImeis,
   canSeeRawData,
   onShowRaw,
+  liveNonce,
+  streamConnected,
 }: Props): JSX.Element {
   const [showHistory, setShowHistory] = useState(false);
   const [history, setHistory] = useState<DiscoveryCountPoint[] | null>(null);
@@ -100,18 +110,18 @@ export function CountPanel({
     setShowHistory((v) => !v);
   };
 
-  // Once loaded, keeps itself in sync with every live poll instead of going
-  // stale until the page is refreshed — `latestDiscoveryAt` changes exactly
-  // when a new round actually lands, live poll or manual Refresh, regardless
-  // of which round is currently being browsed. A device switched off refetches
-  // the same way, since that changes every row's own count too.
+  // Once loaded, keeps itself in sync instead of going stale until the page is
+  // reloaded. `latestDiscoveryAt` moves when a new round adds a whitelisted
+  // tag; `liveNonce` covers the rounds that don't, which are still rows here.
+  // A device switched off refetches the same way, since that changes every
+  // row's own count too.
   useEffect(() => {
     if (history === null) return;
     api
       .fetchDiscoveryCounts(orgId, 200, excludeDeviceImeis)
       .then((res) => setHistory(res.counts))
       .catch(() => {});
-  }, [latestDiscoveryAt, orgId, excludeDeviceImeis]);
+  }, [latestDiscoveryAt, liveNonce, orgId, excludeDeviceImeis]);
 
   const isLive = historyAt === null;
 
@@ -123,15 +133,26 @@ export function CountPanel({
             {timestamp(latestDiscoveryAt)}
           </span>
         )}
+        {/* Two different things, deliberately in one control: whether the map
+            is showing the latest round, and whether new rounds are still
+            reaching this browser. With no Refresh button to fall back on, a
+            stream that has quietly died has to say so. */}
         <button
           type="button"
           className="live-badge"
           data-live={isLive ? '1' : '0'}
+          data-stream={streamConnected ? 'up' : 'down'}
           onClick={onGoLive}
-          title={isLive ? 'Showing the latest snapshot' : 'Jump back to the latest snapshot'}
+          title={
+            !streamConnected
+              ? 'Live updates are reconnecting — showing the last data that arrived'
+              : isLive
+                ? 'Showing the latest snapshot, updating as rounds arrive'
+                : 'Jump back to the latest snapshot'
+          }
         >
           <span className="live-dot" aria-hidden="true" />
-          LIVE
+          {streamConnected ? 'LIVE' : 'RECONNECTING'}
         </button>
       </div>
       <h3>

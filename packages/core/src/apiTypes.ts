@@ -37,6 +37,30 @@ export interface OrganisationRow {
   tagCount: number;
 }
 
+/**
+ * How a reader's readings arrive, as an admin sets it. `'auto'` decides from
+ * whether the unit has actually pushed recently, which is what lets a fleet
+ * migrate to push ingest without anyone visiting each device — and what makes
+ * a unit whose modem goes quiet fall back to log scraping on its own.
+ */
+export type IngestMode = 'auto' | 'push' | 'scrape';
+
+/**
+ * Where the position on a `DeviceRow` came from, for the discovery it is being
+ * shown with.
+ *
+ * - `own` — the reader's own fix, reported inside the applicability window
+ * - `linked-tag` — no applicable own fix, so this is the position of the
+ *   ordinary tag carried by the same animal, in that same discovery round
+ * - `stale` — nothing applicable; this is the last position on record and must
+ *   be rendered as not-applicable, never as current
+ * - `none` — no position at all
+ */
+export type DevicePositionSource = 'own' | 'linked-tag' | 'stale' | 'none';
+
+/** Where a learned identity's value came from. `'manual'` is a latch inference never writes through. */
+export type IdentitySource = 'manual' | 'auto';
+
 export interface DeviceRow {
   /** The device IMEI — its identity everywhere, including in the logs API. */
   imei: string;
@@ -58,23 +82,89 @@ export interface DeviceRow {
   pollOffsetMinutes: number;
   lastIngestAt: number | null;
   lastIngestStatus: string | null;
-  /** The mesh radio id this reader identifies itself as inside a tag's `RssiSrc`
-   *  column — set by hand; null until an admin fills it in. */
+  /**
+   * What an admin set. `effectiveIngestMode` is what it currently resolves
+   * to — the two differ only while this is `'auto'`.
+   */
+  ingestMode: IngestMode;
+  /** Newest pushed campaign's arrival time, or null if this reader has never pushed. */
+  lastPushAt: number | null;
+  /**
+   * What `ingestMode` resolves to right now. Computed per request rather than
+   * stored, because it depends on the clock and on the configured grace period.
+   */
+  effectiveIngestMode: 'push' | 'scrape';
+  /** The mesh radio id this reader identifies itself as inside a tag's `RssiSrc` column. */
   radioId: string | null;
-  /** The reader's own position, read off the events API rather than the discovery
-   *  logs (which never carry it) — null until the first successful read. */
+  radioIdSource: IdentitySource | null;
+  /** The ordinary tag carried by the same animal as this reader. */
+  carriedTagId: string | null;
+  carriedTagSource: IdentitySource | null;
+  /** Last time the identity inference ran for this reader — its own rate limit, across restarts. */
+  identityCheckedAt: number | null;
+  /**
+   * The reader's own position, read off the events API rather than the
+   * discovery logs (which never carry it) — or, when `positionSource` says so,
+   * the carried tag's position standing in for it. Null until there has been
+   * one of either.
+   */
   lat: number | null;
   lon: number | null;
   gpsUpdatedAt: number | null;
+  /**
+   * Whether the position above actually applies to the discovery being shown.
+   * A row that has not been through `resolveDevicePosition` reports `'stale'`
+   * (or `'none'`), so an un-validated position renders greyed rather than
+   * confidently wrong.
+   */
+  positionSource: DevicePositionSource;
+  /** When the shown position was reported. Mirrors `gpsUpdatedAt`, kept separate so the two can diverge later. */
+  positionAt: number | null;
+  /** The carried tag the position came from, when `positionSource` is `'linked-tag'`. */
+  positionTagId: string | null;
+  /** The discovery time the position was judged against — what "±10 minutes of what?" resolved to. */
+  discoveryAt: number | null;
   /** This reader's own firmware version, off its most recent round — null until it has reported one. */
   readerFw: string | null;
   createdAt: number;
+}
+
+/**
+ * One accumulated guess at a reader's identity, with the evidence behind it —
+ * what the admin panel shows when it is asked why a value was chosen, or why
+ * none was.
+ */
+export interface DeviceIdentityCandidate {
+  kind: 'radio' | 'carried';
+  value: string;
+  /** True only for a CBOR-reported `primaryDeviceId`, which is not a guess at all. */
+  exact: boolean;
+  rounds: number;
+  score: number;
+  /** The numbers behind the score. */
+  evidence: Record<string, number> | null;
+  firstSeenAt: number;
+  lastSeenAt: number;
+  /**
+   * Why this candidate was not chosen — `'also-heard'`, `'too-few-rounds'`,
+   * `'share-below-threshold'`, `'score-below-threshold'`, `'no-margin'`,
+   * `'heard-better-elsewhere'`, `'is-a-radio-id'`, `'outranked-by-report'`,
+   * `'implausible-rssi'` — or null when it was.
+   */
+  rejectedFor: string | null;
 }
 
 export interface OrgTagRow {
   orgId: string;
   tagId: string;
   label: string | null;
+  /**
+   * Switched off for the whole organisation — dropped from the map, from the
+   * unique-tag count's denominator and from the alerts panel, for everyone who
+   * looks at this org. Usually says "this one is known to be inactive", which
+   * is a fact about the tag rather than a preference of whoever noticed.
+   */
+  hidden: boolean;
   createdAt: number;
   /** Last time this tag appeared in any of the org's devices' logs, if ever. */
   lastSeenAt: number | null;
@@ -291,12 +381,17 @@ export interface IngestRunRow {
 }
 
 /**
- * A user's own map toggles — which tags are switched off in the main list,
- * and which marker-colour legend is active — saved against their account so
- * they carry over to the next login rather than resetting every session.
+ * A user's own map toggles — saved against their account so they carry over to
+ * the next login rather than resetting every session.
+ *
+ * Which *tags* are switched off is deliberately not here any more: that turned
+ * out to be a statement about the tag ("this one is dead, stop counting it")
+ * rather than about the viewer, so it lives on `OrgTagRow.hidden` and is
+ * shared by everyone looking at that organisation. Which *devices* are
+ * switched off is still per-user — that one really is "what I want to look at
+ * right now".
  */
 export interface UserPreferences {
-  hiddenTagIds: string[];
   colorMode: 'age' | 'latestGps' | 'discovery';
   /** The organisation this user was last looking at — null if they've never picked one. */
   lastOrgId: string | null;

@@ -1,22 +1,43 @@
 import { Hono } from 'hono';
 import { nanoid } from 'nanoid';
-import { parseTagIdList, type UserRole } from '@tagexplore/core';
+import { parseTagIdList, type IngestMode, type UserRole } from '@tagexplore/core';
 import { hashPassword } from '../auth/password.js';
 import { currentUser } from '../auth/session.js';
 import type { Config } from '../config.js';
 import type { Store } from '../db/index.js';
+import type { LiveBus } from '../events/bus.js';
+import { explainCandidates, inferDeviceIdentities } from '../infer/identity.js';
 import { refreshDeviceFully } from '../ingest/ingest.js';
+import { effectiveIngestMode } from '../ingest/scheduler.js';
 import { MIN_PASSWORD_LENGTH, USERNAME_PATTERN } from './auth.js';
 
 export interface AdminDeps {
   store: Store;
   config: Config;
+  bus?: LiveBus;
 }
 
 const VALID_ROLES: readonly UserRole[] = ['client', 'dev', 'admin'];
+const VALID_INGEST_MODES: readonly IngestMode[] = ['auto', 'push', 'scrape'];
 /** An IMEI is 15 digits; anything else is a typo, not a device. */
 const IMEI_PATTERN = /^\d{14,16}$/;
+/** A tag id is 1-4 hex characters — the form both ingest paths store them in. */
+const TAG_ID_PATTERN = /^[0-9A-F]{1,4}$/;
 const UNCLAIMED_WINDOW_MS = 30 * 86_400_000;
+
+/**
+ * Reads a manually-entered identity value off a request body. Returns
+ * `undefined` when the field was absent (leave it alone), `null` for an empty
+ * string (clear it, which hands the field back to the inference), or the
+ * normalised value.
+ */
+function readIdentityValue(raw: unknown): string | null | undefined | { error: string } {
+  if (typeof raw !== 'string') return undefined;
+  const trimmed = raw.trim().toUpperCase();
+  if (trimmed === '') return null;
+  if (!TAG_ID_PATTERN.test(trimmed)) return { error: `"${trimmed}" is not a 1-4 character hex id.` };
+  return trimmed;
+}
 
 type Env = { Variables: { userId: string } };
 
@@ -179,21 +200,38 @@ export function createAdminApi(deps: AdminDeps): Hono<Env> {
 
   // --- Devices -------------------------------------------------------------
 
-  api.get('/devices', (c) => c.json({ devices: deps.store.listDevices() }));
+  /**
+   * Unlike the org-scoped `/api/devices`, this one is not about the map — it
+   * is the admin table — so it resolves the ingest mode but leaves positions
+   * alone. `toDeviceRow` reports an unresolved position as `'stale'`, which is
+   * the honest answer here: nothing has judged it against a discovery.
+   */
+  api.get('/devices', (c) => {
+    const nowMs = Date.now();
+    const pushGraceMs = deps.config.pushGraceMinutes * 60_000;
+    return c.json({
+      devices: deps.store
+        .listDevices()
+        .map((d) => ({ ...d, effectiveIngestMode: effectiveIngestMode(d, d.lastPushAt, nowMs, pushGraceMs) })),
+    });
+  });
 
   api.post('/devices', async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
     const imei = typeof body['imei'] === 'string' ? body['imei'].trim() : '';
     const orgId = typeof body['orgId'] === 'string' ? body['orgId'] : '';
     const label = typeof body['label'] === 'string' ? body['label'].trim() : '';
-    const radioIdRaw = typeof body['radioId'] === 'string' ? body['radioId'].trim().toUpperCase() : '';
-    const radioId = radioIdRaw === '' ? null : radioIdRaw;
+
+    const radioId = readIdentityValue(body['radioId']);
+    if (radioId && typeof radioId === 'object') return c.json({ error: radioId.error }, 400);
+    const carriedTagId = readIdentityValue(body['carriedTagId']);
+    if (carriedTagId && typeof carriedTagId === 'object') return c.json({ error: carriedTagId.error }, 400);
 
     if (!IMEI_PATTERN.test(imei)) return c.json({ error: 'An IMEI is 14-16 digits.' }, 400);
     if (!deps.store.getOrg(orgId)) return c.json({ error: 'No organisation with that id.' }, 404);
     if (deps.store.getDevice(imei)) return c.json({ error: 'That IMEI is already registered.' }, 409);
 
-    deps.store.createDevice(imei, orgId, label, radioId);
+    deps.store.createDevice(imei, orgId, label, radioId ?? null, carriedTagId ?? null);
     return c.json({ device: deps.store.getDevice(imei) }, 201);
   });
 
@@ -206,9 +244,12 @@ export function createAdminApi(deps: AdminDeps): Hono<Env> {
 
     if (typeof body['label'] === 'string') patch.label = body['label'].trim();
     if (typeof body['active'] === 'boolean') patch.active = body['active'];
-    if (typeof body['radioId'] === 'string') {
-      const trimmed = body['radioId'].trim().toUpperCase();
-      patch.radioId = trimmed === '' ? null : trimmed;
+    if (typeof body['ingestMode'] === 'string') {
+      const mode = body['ingestMode'] as IngestMode;
+      if (!VALID_INGEST_MODES.includes(mode)) {
+        return c.json({ error: `ingestMode must be one of ${VALID_INGEST_MODES.join(', ')}.` }, 400);
+      }
+      patch.ingestMode = mode;
     }
     if (typeof body['orgId'] === 'string') {
       if (!deps.store.getOrg(body['orgId'])) return c.json({ error: 'No organisation with that id.' }, 404);
@@ -238,8 +279,43 @@ export function createAdminApi(deps: AdminDeps): Hono<Env> {
       return c.json({ error: err instanceof Error ? err.message : 'Invalid schedule.' }, 400);
     }
 
+    // The two learned identities have their own setters, because each has to
+    // keep its `*_source` column in step — writing one marks it 'manual', which
+    // is the latch the inference can never write through, and clearing one
+    // hands the field back to the inference.
+    const radioId = readIdentityValue(body['radioId']);
+    if (radioId && typeof radioId === 'object') return c.json({ error: radioId.error }, 400);
+    const carriedTagId = readIdentityValue(body['carriedTagId']);
+    if (carriedTagId && typeof carriedTagId === 'object') return c.json({ error: carriedTagId.error }, 400);
+
     deps.store.updateDevice(imei, patch);
+    if (radioId !== undefined) deps.store.setRadioId(imei, radioId as string | null);
+    if (carriedTagId !== undefined) deps.store.setCarriedTag(imei, carriedTagId as string | null);
     return c.json({ device: deps.store.getDevice(imei) });
+  });
+
+  /**
+   * What the inference has to go on for one reader, and why it did or didn't
+   * choose each candidate. `rejectedFor` is re-derived on read rather than
+   * stored, so a threshold change shows up without waiting for the next run.
+   */
+  api.get('/devices/:imei/identity', (c) => {
+    const device = deps.store.getDevice(c.req.param('imei'));
+    if (!device) return c.json({ error: 'No device with that IMEI.' }, 404);
+    return c.json({ candidates: explainCandidates(deps.store, deps.config, device) });
+  });
+
+  /** Re-runs the inference now, so a freshly registered reader isn't a half-hour wait. */
+  api.post('/devices/:imei/identity/reinfer', (c) => {
+    const device = deps.store.getDevice(c.req.param('imei'));
+    if (!device) return c.json({ error: 'No device with that IMEI.' }, 404);
+    try {
+      inferDeviceIdentities(deps.store, deps.config, device, Date.now());
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : 'Inference failed.' }, 500);
+    }
+    const updated = deps.store.getDevice(device.imei);
+    return c.json({ device: updated, candidates: explainCandidates(deps.store, deps.config, device) });
   });
 
   api.delete('/devices/:imei', (c) => {
@@ -249,12 +325,19 @@ export function createAdminApi(deps: AdminDeps): Hono<Env> {
     return c.json({ ok: true });
   });
 
-  /** Reads this device's schedule, log, position and geofences right now instead of waiting for its next slot. */
+  /**
+   * Reads this device's schedule, log, position and geofences right now
+   * instead of waiting for its next slot — and the position read deliberately
+   * ignores the scheduler's own debounce, so this keeps meaning "everything,
+   * now" even a minute after the last automatic read. It is the diagnostic to
+   * reach for when one reader looks stuck; there is no longer an app-wide
+   * refresh, because the app no longer needs one.
+   */
   api.post('/devices/:imei/ingest', async (c) => {
     const imei = c.req.param('imei');
     if (!deps.store.getDevice(imei)) return c.json({ error: 'No device with that IMEI.' }, 404);
     try {
-      const result = await refreshDeviceFully(deps.store, deps.config, imei);
+      const result = await refreshDeviceFully(deps.store, deps.config, imei, new Date(), deps.bus);
       return c.json({ result: { ...result, from: result.from.toISOString(), to: result.to.toISOString() } });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : 'Ingest failed.' }, 502);

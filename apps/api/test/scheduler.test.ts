@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { DeviceRow } from '@tagexplore/core';
-import { isDue, mostRecentDuePollAt } from '../src/ingest/scheduler.js';
+import { effectiveIngestMode, isDue, mostRecentDuePollAt } from '../src/ingest/scheduler.js';
 
 /** The fleet's real setting: 19 hourly reports from 04:10, read 10 minutes later. */
 function device(patch: Partial<DeviceRow> = {}): DeviceRow {
@@ -16,6 +16,9 @@ function device(patch: Partial<DeviceRow> = {}): DeviceRow {
     pollOffsetMinutes: 10,
     lastIngestAt: null,
     lastIngestStatus: null,
+    ingestMode: 'auto',
+    lastPushAt: null,
+    effectiveIngestMode: 'scrape',
     createdAt: 0,
     ...patch,
   };
@@ -88,5 +91,32 @@ describe('isDue', () => {
 
   it('never runs an inactive device', () => {
     expect(isDue(device({ active: false }), now)).toBe(false);
+  });
+});
+
+describe('effectiveIngestMode', () => {
+  const GRACE = 180 * 60_000;
+  const NOW = at('2026-07-22T12:00:00+02:00');
+
+  it('honours an explicit setting whatever the pushes say', () => {
+    // An admin who pinned a unit knows something the data does not, and a
+    // firmware regression must not be able to quietly restart an hourly pull
+    // against their wishes.
+    expect(effectiveIngestMode(device({ ingestMode: 'push' }), null, NOW, GRACE)).toBe('push');
+    expect(effectiveIngestMode(device({ ingestMode: 'scrape' }), NOW - 60_000, NOW, GRACE)).toBe('scrape');
+  });
+
+  it('follows the pushes on auto', () => {
+    expect(effectiveIngestMode(device(), NOW - 60 * 60_000, NOW, GRACE)).toBe('push');
+    expect(effectiveIngestMode(device(), NOW - 4 * 60 * 60_000, NOW, GRACE)).toBe('scrape');
+  });
+
+  it('scrapes a device that has never pushed', () => {
+    expect(effectiveIngestMode(device(), null, NOW, GRACE)).toBe('scrape');
+  });
+
+  it('counts a push exactly on the boundary as still pushing', () => {
+    expect(effectiveIngestMode(device(), NOW - GRACE, NOW, GRACE)).toBe('push');
+    expect(effectiveIngestMode(device(), NOW - GRACE - 1, NOW, GRACE)).toBe('scrape');
   });
 });

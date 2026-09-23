@@ -642,6 +642,34 @@ main {
   }
 }
 
+/* A reader whose stored fix is too far from the discovery being shown. It
+   stays on the map — "the reader is roughly over there" is still worth
+   having — but goes grey and stops moving entirely. Killing the ping is half
+   the signal: a landmark that has stopped pulsing reads as not-live before
+   the colour change registers at all. */
+.device-marker-wrap.stale .device-marker-dot {
+  background: var(--ink-dim);
+  animation: none;
+  box-shadow: none;
+  opacity: 0.45;
+}
+.device-marker-wrap.stale .device-marker-ping {
+  display: none;
+}
+
+/* Located by the tag carried on the same animal rather than by its own fix:
+   still the reader, still purple, but drawn hollow so it is not mistaken for
+   a first-hand position. */
+.device-marker-wrap.via-tag .device-marker-dot {
+  background: transparent;
+  border: 2px dashed #a855f7;
+  animation: none;
+  box-shadow: 0 0 8px rgba(168, 85, 247, 0.55);
+}
+.device-marker-wrap.via-tag .device-marker-ping {
+  opacity: 0.4;
+}
+
 /* The "ball" pushed along a link line, origin toward tag — its own JS-driven
    position is all the animation loop controls; the pulsing look (a beat every
    2s, matching the loop's 0.5Hz) lives entirely here. */
@@ -651,11 +679,14 @@ main {
 }
 .link-ball {
   display: block;
-  width: 8px;
-  height: 8px;
+  /* Small and modestly lit: the line it travels is nearly invisible, and a
+     ball with the old 7px glow around it swamped the map rather than tracing
+     anything across it. */
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: #a9f0cf;
-  box-shadow: 0 0 7px 2px rgba(79, 191, 139, 0.9);
+  box-shadow: 0 0 4px 1px rgba(79, 191, 139, 0.55);
 }
 
 /* A tag's discovery wave number in link view, pinned beside its position dot —
@@ -747,6 +778,25 @@ main {
 .live-badge[data-live='0'] {
   color: var(--ink-dim);
   border-color: var(--ink-dim);
+}
+/* A dead stream outranks which round is being shown: amber and pulsing, so a
+   page that has quietly stopped receiving cannot be mistaken for a quiet farm.
+   There is no Refresh button behind this any more, so it has to be loud. */
+.live-badge[data-stream='down'] {
+  color: #e9ae2f;
+  border-color: #e9ae2f;
+}
+.live-badge[data-stream='down'] .live-dot {
+  animation: live-reconnect 1.4s ease-in-out infinite;
+}
+@keyframes live-reconnect {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.15;
+  }
 }
 .count-history {
   margin-top: 8px;
@@ -1551,4 +1601,29 @@ footer {
     transition: none !important;
     animation: none !important;
   }
+}
+
+/* A reader's position that does not apply to the discovery on screen. Dimmed
+   rather than hidden: knowing roughly where the reader is still helps, as long
+   as it is not presented as this round's answer. */
+.position-stale {
+  color: var(--ink-dim);
+  opacity: 0.7;
+}
+.position-note {
+  font-size: 10px;
+  color: var(--ink-dim);
+  margin-top: 2px;
+}
+
+/* Marks a value the inference chose rather than an admin. Deliberately quiet —
+   it is an annotation on the value, not a warning about it. */
+.identity-badge {
+  margin-left: 5px;
+  padding: 0 4px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--ink-dim);
 }

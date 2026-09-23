@@ -273,17 +273,80 @@ describe('devices', () => {
   });
 
   it('has no radio id or position until they are set by hand and by ingest, respectively', () => {
-    expect(store.getDevice(DEVICE)).toMatchObject({ radioId: null, lat: null, lon: null, gpsUpdatedAt: null });
+    expect(store.getDevice(DEVICE)).toMatchObject({
+      radioId: null,
+      radioIdSource: null,
+      lat: null,
+      lon: null,
+      gpsUpdatedAt: null,
+    });
 
-    store.updateDevice(DEVICE, { radioId: 'E20' });
+    // Through `setRadioId`, not `updateDevice`: the value and the column that
+    // records where it came from have to move together, so the generic patch
+    // deliberately no longer accepts it.
+    store.setRadioId(DEVICE, 'E20');
     store.setDevicePosition(DEVICE, -33.9637, 18.8383, T0);
 
     expect(store.getDevice(DEVICE)).toMatchObject({
       radioId: 'E20',
+      radioIdSource: 'manual',
       lat: -33.9637,
       lon: 18.8383,
       gpsUpdatedAt: T0,
     });
+  });
+
+  it('never lets the inference write over a value an admin typed', () => {
+    store.setRadioId(DEVICE, 'E20');
+    store.setCarriedTag(DEVICE, '3E1E');
+
+    store.applyInferredRadioId(DEVICE, 'FFFF');
+    store.applyInferredCarriedTag(DEVICE, 'AAAA');
+
+    expect(store.getDevice(DEVICE)).toMatchObject({
+      radioId: 'E20',
+      radioIdSource: 'manual',
+      carriedTagId: '3E1E',
+      carriedTagSource: 'manual',
+    });
+  });
+
+  it('fills an unset value in, and revises its own earlier guess', () => {
+    store.applyInferredRadioId(DEVICE, 'E20');
+    expect(store.getDevice(DEVICE)).toMatchObject({ radioId: 'E20', radioIdSource: 'auto' });
+
+    store.applyInferredRadioId(DEVICE, 'E21');
+    expect(store.getDevice(DEVICE)).toMatchObject({ radioId: 'E21', radioIdSource: 'auto' });
+  });
+
+  it('hands a field back to the inference when it is cleared', () => {
+    store.setCarriedTag(DEVICE, '3E1E');
+    store.applyInferredCarriedTag(DEVICE, 'AAAA');
+    expect(store.getDevice(DEVICE)?.carriedTagId).toBe('3E1E');
+
+    store.setCarriedTag(DEVICE, null);
+    expect(store.getDevice(DEVICE)).toMatchObject({ carriedTagId: null, carriedTagSource: null });
+
+    store.applyInferredCarriedTag(DEVICE, 'AAAA');
+    expect(store.getDevice(DEVICE)).toMatchObject({ carriedTagId: 'AAAA', carriedTagSource: 'auto' });
+  });
+
+  it('finds the position nearest a discovery, not merely the newest before it', () => {
+    // Eight minutes early and three minutes late. The later one is closer to
+    // the round, which is what "where was it during that discovery" asks.
+    store.setDevicePosition(DEVICE, -33.9, 18.8, T0 - 8 * 60_000);
+    store.setDevicePosition(DEVICE, -33.8, 18.7, T0 + 3 * 60_000);
+
+    expect(store.getDevicePositionNear(DEVICE, T0, 10 * 60_000)).toMatchObject({ lat: -33.8, lon: 18.7 });
+    // `getDevicePositionAt` answers the other question — last known — and must
+    // keep doing so, since it is the chain's greyed-out fallback.
+    expect(store.getDevicePositionAt(DEVICE, T0)).toMatchObject({ lat: -33.9, lon: 18.8 });
+  });
+
+  it('reports no applicable position when every fix is outside the window', () => {
+    store.setDevicePosition(DEVICE, -33.9, 18.8, T0 - 40 * 60_000);
+    expect(store.getDevicePositionNear(DEVICE, T0, 10 * 60_000)).toBeNull();
+    expect(store.getDevicePositionAt(DEVICE, T0)).not.toBeNull();
   });
 });
 

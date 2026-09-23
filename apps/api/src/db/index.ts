@@ -4,6 +4,7 @@ import { dirname } from 'node:path';
 import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite';
 import type {
   BatterySeries,
+  DeviceIdentityCandidate,
   DeviceRow,
   DiscoveryCountPoint,
   DiscoveryDetail,
@@ -13,6 +14,8 @@ import type {
   DiscoverySource,
   GeofenceRegion,
   GpsPoint,
+  IdentitySource,
+  IngestMode,
   IngestRunRow,
   LinkReading,
   OrgAccessRequestRow,
@@ -123,11 +126,31 @@ CREATE TABLE IF NOT EXISTS devices (
   poll_offset_minutes     INTEGER NOT NULL DEFAULT 10,
   last_ingest_at          INTEGER,
   last_ingest_status      TEXT,
+  -- How this reader's readings arrive: 'push' for a unit that POSTs its CBOR
+  -- campaigns to us, 'scrape' for one we read the syslog of, 'auto' (the
+  -- default) to decide from whether it has pushed recently. The schedule
+  -- columns above exist only to time a scrape, so they are dead settings on a
+  -- reader that is effectively 'push'.
+  ingest_mode             TEXT NOT NULL DEFAULT 'auto',
   -- The mesh radio id this reader identifies itself as inside a tag's own
-  -- RssiSrc column — set by hand, since nothing in the logs or events API
-  -- names it. Lets the link-view map draw a tag's line all the way back to
-  -- the reader itself when a tag reached it directly, not through another tag.
+  -- RssiSrc column. Lets the link-view map draw a tag's line all the way back
+  -- to the reader itself when a tag reached it directly, not through another
+  -- tag. Learned from device_identity_candidates below, or typed by an admin.
   radio_id                TEXT,
+  -- Where radio_id's value came from. 'manual' is a latch: inference may never
+  -- write through it. 'auto' means inference chose it and may revise it. NULL
+  -- means it has never been set, so inference is free to fill it in — which is
+  -- also what clearing the field in the admin panel returns it to, and how a
+  -- reader is handed back to the inference.
+  radio_id_source         TEXT,
+  -- The ordinary tag carried by the same animal that carries this reader.
+  -- There is always one, and it is the answer to "where was this reader
+  -- during that discovery" whenever the reader's own fix is too old to apply.
+  carried_tag_id          TEXT,
+  carried_tag_source      TEXT,
+  -- Last time the identity inference ran for this reader, so a restart does
+  -- not re-run the whole fleet at once.
+  identity_checked_at     INTEGER,
   -- The reader's own position — not reported in the discovery logs at all,
   -- so it's read separately off the events API and cached here.
   gps_lat                 REAL,
@@ -149,6 +172,39 @@ CREATE TABLE IF NOT EXISTS device_positions (
   PRIMARY KEY (device_imei, reported_at)
 );
 
+-- The evidence behind a reader's two learned identities: the mesh radio id it
+-- names itself by inside a tag's RssiSrc column, and the ordinary tag carried
+-- by the same animal. Both are accumulated here from whatever the ingest paths
+-- saw and only then promoted onto devices — so a promotion can always be
+-- explained, and an admin who disagrees can see exactly what it reasoned from.
+--
+-- exact separates the two grades of evidence. A pushed CBOR campaign reports
+-- its own primaryDeviceId directly, which is not a guess at all; everything
+-- read out of a syslog is inferred from a vote across rounds. A device with
+-- two exact radio candidates has two primaries reporting through it, which is
+-- surfaced rather than guessed at — see infer/identity.ts.
+CREATE TABLE IF NOT EXISTS device_identity_candidates (
+  device_imei    TEXT NOT NULL REFERENCES devices(imei) ON DELETE CASCADE,
+  -- 'radio' | 'carried'
+  kind           TEXT NOT NULL,
+  -- A tag id, in the same 1-4 hex-character form readings are stored as.
+  value          TEXT NOT NULL,
+  exact          INTEGER NOT NULL DEFAULT 0,
+  -- Distinct discovery rounds this candidate was supported by.
+  rounds         INTEGER NOT NULL DEFAULT 0,
+  -- 0..1. Its share of the rounds seen on an exact candidate; the weighted
+  -- score described in infer/identity.ts on an inferred one.
+  score          REAL NOT NULL DEFAULT 0,
+  -- JSON: the numbers behind the score, so the admin panel can show its work.
+  evidence       TEXT,
+  first_seen_at  INTEGER NOT NULL,
+  last_seen_at   INTEGER NOT NULL,
+  PRIMARY KEY (device_imei, kind, value)
+);
+
+CREATE INDEX IF NOT EXISTS device_identity_candidates_pick
+  ON device_identity_candidates(device_imei, kind, score DESC);
+
 -- The per-organisation tag whitelist. A tag only becomes visible to an
 -- organisation once it is listed here, even though its readings arrive
 -- automatically through whichever of that organisation's devices heard it.
@@ -156,6 +212,13 @@ CREATE TABLE IF NOT EXISTS org_tags (
   org_id      TEXT NOT NULL REFERENCES organisations(id) ON DELETE CASCADE,
   tag_id      TEXT NOT NULL,
   label       TEXT,
+  -- Switched off for this organisation, by anyone in it. Not a per-viewer
+  -- preference: the point of switching a tag off is usually that it is known
+  -- to be inactive, and a count of 27/28 that is really 27/27 should read that
+  -- way for everyone rather than only for whoever noticed. It drops the tag
+  -- from the map, from the unique-tag count's denominator and from the alerts
+  -- panel, exactly as the old per-user toggle did — for the whole org.
+  hidden      INTEGER NOT NULL DEFAULT 0,
   created_at  INTEGER NOT NULL,
   PRIMARY KEY (org_id, tag_id)
 );
@@ -358,6 +421,13 @@ export interface ReadingWindow {
 export interface TagDiscoveryPostInput {
   deviceImei: string;
   primaryDeviceId: number;
+  /**
+   * `primaryDeviceId` in the hex form tag ids are stored as — which is exactly
+   * what this reader's `radio_id` is, reported by the unit rather than guessed
+   * at. Null when the raw value wasn't a usable id, in which case no identity
+   * evidence is recorded.
+   */
+  primaryTagId: string | null;
   sessionUtc: number;
   receivedAt: number;
   bracketAt: number;
@@ -493,6 +563,80 @@ function migrateDevicesRadioAndGps(db: DatabaseSyncType): void {
   if (!names.has('gps_updated_at')) db.exec('ALTER TABLE devices ADD COLUMN gps_updated_at INTEGER');
 }
 
+/**
+ * Same idea again, for how a reader's readings arrive. Every device that
+ * predates the column is left on `'auto'`, which decides from whether it has
+ * pushed recently — so an existing fleet keeps scraping until the moment a
+ * unit actually starts posting, with no separate data fix.
+ */
+function migrateDeviceIngestMode(db: DatabaseSyncType): void {
+  const columns = db.prepare('PRAGMA table_info(devices)').all() as Array<{ name: string }>;
+  if (columns.some((c) => c.name === 'ingest_mode')) return;
+  db.exec("ALTER TABLE devices ADD COLUMN ingest_mode TEXT NOT NULL DEFAULT 'auto'");
+}
+
+/**
+ * Moves the tag toggle from a per-user preference to a per-organisation one.
+ *
+ * The backfill matters as much as the column. Switching a tag off has always
+ * meant "this one is known to be inactive, stop counting it" — a statement
+ * about the tag, not a view preference — so the existing toggles are seeded
+ * into the org rather than thrown away and left for someone to notice and
+ * redo. A tag switched off by *anyone* in an organisation is switched off for
+ * it: the union is the reading that loses no information, and any member can
+ * switch one back on with a click.
+ *
+ * Guarded by a one-shot flag rather than by the column's absence, because the
+ * seed must not re-run after someone deliberately switches a tag back on.
+ */
+function migrateOrgHiddenTags(db: DatabaseSyncType): void {
+  const columns = db.prepare('PRAGMA table_info(org_tags)').all() as Array<{ name: string }>;
+  if (!columns.some((c) => c.name === 'hidden')) {
+    db.exec('ALTER TABLE org_tags ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0');
+  }
+
+  const done = db.prepare("SELECT value FROM app_settings WHERE key = 'orgHiddenTagsSeeded'").get() as
+    | { value: string }
+    | undefined;
+  if (done) return;
+
+  // `user_preferences.prefs` is a JSON blob; `json_each` over its
+  // `hiddenTagIds` array is how each user's set is joined back to the
+  // organisations they can actually see.
+  db.exec(`
+    UPDATE org_tags SET hidden = 1
+     WHERE EXISTS (
+       SELECT 1
+         FROM user_preferences p
+         JOIN user_orgs uo ON uo.user_id = p.user_id
+         JOIN json_each(p.prefs, '$.hiddenTagIds') h
+        WHERE uo.org_id = org_tags.org_id AND h.value = org_tags.tag_id
+     )
+  `);
+  db.prepare("INSERT INTO app_settings (key, value) VALUES ('orgHiddenTagsSeeded', ?)").run(String(Date.now()));
+}
+
+/**
+ * The two learned identities and where each one's value came from.
+ *
+ * The backfill at the end is the load-bearing part. Every `radio_id` already
+ * in a database was typed by an admin, and without marking those `'manual'`
+ * the first inference run would quietly overwrite the fleet's hand-set values.
+ * It is safe to run on every boot rather than only alongside the ALTER,
+ * because inference always writes its value and `'auto'` in the same
+ * statement — so `radio_id IS NOT NULL AND radio_id_source IS NULL` can only
+ * ever describe a hand-typed one.
+ */
+function migrateDeviceIdentity(db: DatabaseSyncType): void {
+  const columns = db.prepare('PRAGMA table_info(devices)').all() as Array<{ name: string }>;
+  const names = new Set(columns.map((c) => c.name));
+  if (!names.has('radio_id_source')) db.exec('ALTER TABLE devices ADD COLUMN radio_id_source TEXT');
+  if (!names.has('carried_tag_id')) db.exec('ALTER TABLE devices ADD COLUMN carried_tag_id TEXT');
+  if (!names.has('carried_tag_source')) db.exec('ALTER TABLE devices ADD COLUMN carried_tag_source TEXT');
+  if (!names.has('identity_checked_at')) db.exec('ALTER TABLE devices ADD COLUMN identity_checked_at INTEGER');
+  db.exec("UPDATE devices SET radio_id_source = 'manual' WHERE radio_id IS NOT NULL AND radio_id_source IS NULL");
+}
+
 function toBool(value: unknown): boolean {
   return Number(value) === 1;
 }
@@ -500,6 +644,16 @@ function toBool(value: unknown): boolean {
 /** Anything other than the one value the push path writes is the scraped path. */
 function asDiscoverySource(value: unknown): DiscoverySource {
   return value === 'cbor' ? 'cbor' : 'log';
+}
+
+/** Anything unrecognised falls back to `'auto'`, the column's own default. */
+function asIngestMode(value: unknown): IngestMode {
+  return value === 'push' || value === 'scrape' ? value : 'auto';
+}
+
+/** Null means "never set", which is what leaves a field open to inference. */
+function asIdentitySource(value: unknown): IdentitySource | null {
+  return value === 'manual' || value === 'auto' ? value : null;
 }
 
 /**
@@ -539,6 +693,9 @@ export class Store {
     migrateUserOrgs(this.db);
     migrateReadingsLinkId(this.db);
     migrateDevicesRadioAndGps(this.db);
+    migrateDeviceIngestMode(this.db);
+    migrateDeviceIdentity(this.db);
+    migrateOrgHiddenTags(this.db);
     migrateIngestSource(this.db);
     bootstrapFoundingAdmin(this.db, foundingAdminUsername);
   }
@@ -848,10 +1005,30 @@ export class Store {
 
   // --- Devices -------------------------------------------------------------
 
-  createDevice(imei: string, orgId: string, label: string, radioId: string | null = null): void {
+  createDevice(
+    imei: string,
+    orgId: string,
+    label: string,
+    radioId: string | null = null,
+    carriedTagId: string | null = null,
+  ): void {
+    // A value given at creation was typed by an admin, so it is latched
+    // 'manual' straight away — same rule as setting it later.
     this.db
-      .prepare('INSERT INTO devices (imei, org_id, label, radio_id, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(imei, orgId, label, radioId, Date.now());
+      .prepare(
+        `INSERT INTO devices (imei, org_id, label, radio_id, radio_id_source, carried_tag_id, carried_tag_source, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        imei,
+        orgId,
+        label,
+        radioId,
+        radioId === null ? null : 'manual',
+        carriedTagId,
+        carriedTagId === null ? null : 'manual',
+        Date.now(),
+      );
   }
 
   private static toDeviceRow(row: {
@@ -866,7 +1043,13 @@ export class Store {
     poll_offset_minutes: number;
     last_ingest_at: number | null;
     last_ingest_status: string | null;
+    ingest_mode: string;
+    last_push_at: number | null;
     radio_id: string | null;
+    radio_id_source: string | null;
+    carried_tag_id: string | null;
+    carried_tag_source: string | null;
+    identity_checked_at: number | null;
     gps_lat: number | null;
     gps_lon: number | null;
     gps_updated_at: number | null;
@@ -885,10 +1068,29 @@ export class Store {
       pollOffsetMinutes: row.poll_offset_minutes,
       lastIngestAt: row.last_ingest_at,
       lastIngestStatus: row.last_ingest_status,
+      ingestMode: asIngestMode(row.ingest_mode),
+      lastPushAt: row.last_push_at,
+      // Resolved per request by the routes, which have the clock and the grace
+      // period. `'scrape'` is the safe placeholder: it is what the fleet did
+      // before push ingest existed, so a caller that forgets to resolve it
+      // keeps scraping rather than silently stopping.
+      effectiveIngestMode: 'scrape',
       radioId: row.radio_id,
+      radioIdSource: asIdentitySource(row.radio_id_source),
+      carriedTagId: row.carried_tag_id,
+      carriedTagSource: asIdentitySource(row.carried_tag_source),
+      identityCheckedAt: row.identity_checked_at,
       lat: row.gps_lat,
       lon: row.gps_lon,
       gpsUpdatedAt: row.gps_updated_at,
+      // Nothing has judged this position against a discovery yet, so it is
+      // reported as not-applicable and `resolveDevicePosition` promotes it.
+      // Defaulting the other way would mean any caller that skips the resolver
+      // renders a possibly-hours-old fix as current.
+      positionSource: row.gps_lat === null || row.gps_lon === null ? 'none' : 'stale',
+      positionAt: row.gps_updated_at,
+      positionTagId: null,
+      discoveryAt: null,
       readerFw: row.reader_fw,
       createdAt: row.created_at,
     };
@@ -898,9 +1100,11 @@ export class Store {
     SELECT d.imei, d.org_id, o.name AS org_name, d.label, d.active,
            d.report_start_minute, d.report_interval_minutes, d.report_count_per_day,
            d.poll_offset_minutes, d.last_ingest_at, d.last_ingest_status,
-           d.radio_id, d.gps_lat, d.gps_lon, d.gps_updated_at,
+           d.ingest_mode, d.radio_id, d.radio_id_source, d.carried_tag_id, d.carried_tag_source,
+           d.identity_checked_at, d.gps_lat, d.gps_lon, d.gps_updated_at,
            (SELECT reader_fw FROM rounds WHERE device_imei = d.imei AND reader_fw IS NOT NULL
              ORDER BY bracket_at DESC LIMIT 1) AS reader_fw,
+           (SELECT MAX(received_at) FROM tag_discovery_posts WHERE device_imei = d.imei) AS last_push_at,
            d.created_at
     FROM devices d LEFT JOIN organisations o ON o.id = d.org_id`;
 
@@ -932,10 +1136,15 @@ export class Store {
         | 'reportIntervalMinutes'
         | 'reportCountPerDay'
         | 'pollOffsetMinutes'
-        | 'radioId'
+        | 'ingestMode'
       >
     >,
   ): void {
+    // `radioId` and `carriedTagId` are deliberately not here. Each has exactly
+    // one write path — `setRadioId` / `setCarriedTag` for an admin, the
+    // `applyInferred*` pair for the inference — because both have to keep the
+    // matching `*_source` column in step, and a generic patch would quietly
+    // leave it saying the wrong thing.
     const columns: Record<string, string> = {
       orgId: 'org_id',
       label: 'label',
@@ -944,7 +1153,7 @@ export class Store {
       reportIntervalMinutes: 'report_interval_minutes',
       reportCountPerDay: 'report_count_per_day',
       pollOffsetMinutes: 'poll_offset_minutes',
-      radioId: 'radio_id',
+      ingestMode: 'ingest_mode',
     };
     const sets: string[] = [];
     const values: Array<string | number | null> = [];
@@ -992,6 +1201,350 @@ export class Store {
     return row ?? null;
   }
 
+  /**
+   * The reader's position *nearest* to `at`, within `windowMs` either side —
+   * the question "where was this reader during that discovery", as opposed to
+   * `getDevicePositionAt`'s "where was it last known to be". A fix three
+   * minutes after the round is a better answer than one nine minutes before,
+   * which is why this sorts by distance rather than taking the newest.
+   *
+   * The `BETWEEN` is a range scan on the primary key, so the `ABS()` sort only
+   * ever sees the handful of rows actually inside the window.
+   */
+  getDevicePositionNear(imei: string, at: number, windowMs: number): { lat: number; lon: number; reportedAt: number } | null {
+    const row = this.db
+      .prepare(
+        `SELECT lat, lon, reported_at AS reportedAt
+           FROM device_positions
+          WHERE device_imei = ? AND reported_at BETWEEN ? AND ?
+          ORDER BY ABS(reported_at - ?) ASC
+          LIMIT 1`,
+      )
+      .get(imei, at - windowMs, at + windowMs, at) as { lat: number; lon: number; reportedAt: number } | undefined;
+    return row ?? null;
+  }
+
+  /**
+   * When one device's round actually happened. A pushed round carries the
+   * moment it reached the server; a scraped one has only the 15-minute bracket
+   * its blocks were bucketed into, which is why the caller widens its window
+   * for that case.
+   */
+  roundTimeFor(imei: string, bracketAt: number): { bracketAt: number; receivedAt: number | null } | null {
+    const row = this.db
+      .prepare('SELECT bracket_at AS bracketAt, received_at AS receivedAt FROM rounds WHERE device_imei = ? AND bracket_at = ?')
+      .get(imei, bracketAt) as { bracketAt: number; receivedAt: number | null } | undefined;
+    return row ?? null;
+  }
+
+  /** The newest round this device reported, for judging its live position against. */
+  latestRoundTimeFor(imei: string): { bracketAt: number; receivedAt: number | null } | null {
+    const row = this.db
+      .prepare(
+        `SELECT bracket_at AS bracketAt, received_at AS receivedAt
+           FROM rounds WHERE device_imei = ? ORDER BY bracket_at DESC LIMIT 1`,
+      )
+      .get(imei) as { bracketAt: number; receivedAt: number | null } | undefined;
+    return row ?? null;
+  }
+
+  /**
+   * One tag's own fix inside one discovery round — the carried tag standing in
+   * for the reader it rides with.
+   *
+   * `preferImei`'s own reading wins a tie, because a tag on the same animal as
+   * that reader is heard by it first-hand; another org device's reading of the
+   * same tag in the same round is still accepted, since it describes the same
+   * tag at the same moment. Deliberately not filtered by the `org_tags`
+   * whitelist: a carried tag exists to locate a reader and need not be a tag
+   * anyone has asked to see.
+   */
+  tagPositionInBracket(
+    orgId: string,
+    tagId: string,
+    bracketAt: number,
+    preferImei: string,
+  ): { lat: number; lon: number; gpsAgeSeconds: number | null } | null {
+    const row = this.db
+      .prepare(
+        `SELECT r.lat, r.lon, r.gps_age_s AS gpsAgeSeconds
+           FROM readings r JOIN devices d ON d.imei = r.device_imei
+          WHERE d.org_id = ? AND r.tag_id = ? AND r.bracket_at = ?
+            AND r.has_gps = 1 AND r.lat IS NOT NULL AND r.lon IS NOT NULL
+          ORDER BY (r.device_imei = ?) DESC
+          LIMIT 1`,
+      )
+      .get(orgId, tagId, bracketAt, preferImei) as
+      | { lat: number; lon: number; gpsAgeSeconds: number | null }
+      | undefined;
+    return row ?? null;
+  }
+
+  // --- Learned device identities -------------------------------------------
+
+  /**
+   * The admin's way in. Passing null clears both columns, which hands the
+   * field back to the inference.
+   */
+  setRadioId(imei: string, radioId: string | null): void {
+    this.db
+      .prepare('UPDATE devices SET radio_id = ?, radio_id_source = ? WHERE imei = ?')
+      .run(radioId, radioId === null ? null : 'manual', imei);
+  }
+
+  setCarriedTag(imei: string, tagId: string | null): void {
+    this.db
+      .prepare('UPDATE devices SET carried_tag_id = ?, carried_tag_source = ? WHERE imei = ?')
+      .run(tagId, tagId === null ? null : 'manual', imei);
+  }
+
+  /**
+   * Inference's only way in. The `WHERE` clause is the whole point: a value an
+   * admin typed is never written through, whatever the evidence says. Doing it
+   * in SQL rather than as a read-then-write means there is no window for a
+   * manual entry to land between the check and the update.
+   */
+  applyInferredRadioId(imei: string, radioId: string): void {
+    this.db
+      .prepare(
+        `UPDATE devices SET radio_id = ?, radio_id_source = 'auto'
+          WHERE imei = ? AND COALESCE(radio_id_source, '') <> 'manual'`,
+      )
+      .run(radioId, imei);
+  }
+
+  applyInferredCarriedTag(imei: string, tagId: string): void {
+    this.db
+      .prepare(
+        `UPDATE devices SET carried_tag_id = ?, carried_tag_source = 'auto'
+          WHERE imei = ? AND COALESCE(carried_tag_source, '') <> 'manual'`,
+      )
+      .run(tagId, imei);
+  }
+
+  markIdentityChecked(imei: string, at: number): void {
+    this.db.prepare('UPDATE devices SET identity_checked_at = ? WHERE imei = ?').run(at, imei);
+  }
+
+  /**
+   * Records one more round's worth of support for an exactly-reported
+   * candidate. Called from inside the push receipt's own transaction, after
+   * the dedupe — so a retried POST doesn't count the same round twice.
+   */
+  bumpExactIdentityCandidate(imei: string, kind: 'radio' | 'carried', value: string, at: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO device_identity_candidates
+           (device_imei, kind, value, exact, rounds, score, evidence, first_seen_at, last_seen_at)
+         VALUES (?, ?, ?, 1, 1, 0, NULL, ?, ?)
+         ON CONFLICT (device_imei, kind, value) DO UPDATE SET
+           rounds = device_identity_candidates.rounds + 1,
+           exact = 1,
+           last_seen_at = excluded.last_seen_at`,
+      )
+      .run(imei, kind, value, at, at);
+  }
+
+  /**
+   * Replaces one device's inferred candidates of a kind with a freshly scored
+   * set, leaving `exact` ones alone — those are accumulated counts that a
+   * re-score has no business resetting.
+   *
+   * One value gets one row, so a vote for a value that *also* has exact
+   * evidence is simply dropped rather than merged in: the unit reporting its
+   * own id outright beats any number of votes, and letting the vote's round
+   * count overwrite the receipt count would lose the only thing gating that
+   * evidence from being applied.
+   */
+  replaceInferredCandidates(
+    imei: string,
+    kind: 'radio' | 'carried',
+    candidates: Array<{ value: string; rounds: number; score: number; evidence: Record<string, number> | null }>,
+    at: number,
+  ): void {
+    const del = this.db.prepare('DELETE FROM device_identity_candidates WHERE device_imei = ? AND kind = ? AND exact = 0');
+    const ins = this.db.prepare(
+      `INSERT INTO device_identity_candidates
+         (device_imei, kind, value, exact, rounds, score, evidence, first_seen_at, last_seen_at)
+       VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?)
+       ON CONFLICT (device_imei, kind, value) DO UPDATE SET
+         rounds = excluded.rounds,
+         score = excluded.score,
+         evidence = excluded.evidence,
+         last_seen_at = excluded.last_seen_at
+       WHERE device_identity_candidates.exact = 0`,
+    );
+
+    this.db.exec('BEGIN');
+    try {
+      del.run(imei, kind);
+      for (const c of candidates) {
+        ins.run(imei, kind, c.value, c.rounds, c.score, c.evidence ? JSON.stringify(c.evidence) : null, at, at);
+      }
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
+  /** One device's candidates, best first. `rejectedFor` is filled in by the caller that knows the thresholds. */
+  listIdentityCandidates(imei: string, kind?: 'radio' | 'carried'): DeviceIdentityCandidate[] {
+    const sql =
+      `SELECT kind, value, exact, rounds, score, evidence, first_seen_at, last_seen_at
+         FROM device_identity_candidates
+        WHERE device_imei = ?` +
+      (kind ? ' AND kind = ?' : '') +
+      ' ORDER BY kind ASC, exact DESC, score DESC, rounds DESC';
+    const stmt = this.db.prepare(sql);
+    const rows = (kind ? stmt.all(imei, kind) : stmt.all(imei)) as Array<{
+      kind: string;
+      value: string;
+      exact: number;
+      rounds: number;
+      score: number;
+      evidence: string | null;
+      first_seen_at: number;
+      last_seen_at: number;
+    }>;
+
+    return rows.map((r) => ({
+      kind: r.kind === 'carried' ? 'carried' : 'radio',
+      value: r.value,
+      exact: toBool(r.exact),
+      rounds: r.rounds,
+      score: r.score,
+      evidence: r.evidence ? (JSON.parse(r.evidence) as Record<string, number>) : null,
+      firstSeenAt: r.first_seen_at,
+      lastSeenAt: r.last_seen_at,
+      rejectedFor: null,
+    }));
+  }
+
+  /**
+   * The wave-one vote behind an inferred radio id: everything heard on the
+   * first wave reached the reader directly, so its `RssiSrc` names the reader.
+   *
+   * `alsoHeard` is the discriminator that separates a reader from a busy relay
+   * tag — the reader never appears in its own discovery list, so a `link_id`
+   * that is also a `tag_id` this device heard is a relay and is disqualified.
+   */
+  radioIdVotes(imei: string, since: number): Array<{ value: string; votes: number; rounds: number; alsoHeard: boolean }> {
+    const rows = this.db
+      .prepare(
+        `WITH wave1 AS (
+           SELECT bracket_at, link_id FROM readings
+            WHERE device_imei = :imei AND bracket_at >= :since
+              AND link_id IS NOT NULL AND wave_count = 1
+         ), heard AS (
+           SELECT DISTINCT tag_id FROM readings
+            WHERE device_imei = :imei AND bracket_at >= :since
+         )
+         SELECT w.link_id AS value,
+                COUNT(*) AS votes,
+                COUNT(DISTINCT w.bracket_at) AS rounds,
+                EXISTS (SELECT 1 FROM heard h WHERE h.tag_id = w.link_id) AS also_heard
+           FROM wave1 w
+          GROUP BY w.link_id
+          ORDER BY votes DESC`,
+      )
+      .all({ imei, since }) as Array<{ value: string; votes: number; rounds: number; also_heard: number }>;
+
+    return rows.map((r) => ({ value: r.value, votes: r.votes, rounds: r.rounds, alsoHeard: toBool(r.also_heard) }));
+  }
+
+  /**
+   * Per-tag evidence for the carried-tag inference, over one device's trailing
+   * window. SQLite has no `STDDEV`, so the variance comes out of
+   * `AVG(x²) − AVG(x)²` in the same pass.
+   *
+   * `rssiOther` is the best mean any *other* device in the organisation gets
+   * on the same tag — the exclusivity gate. Without it, two readers sharing a
+   * paddock would both claim the same tag.
+   */
+  carriedTagEvidence(
+    imei: string,
+    orgId: string,
+    since: number,
+  ): {
+    totalRounds: number;
+    tags: Array<{
+      tagId: string;
+      roundsSeen: number;
+      directShare: number;
+      rssiMean: number;
+      rssiVariance: number;
+      viaReaderShare: number;
+      rssiOther: number | null;
+    }>;
+  } {
+    const total = this.db
+      .prepare('SELECT COUNT(DISTINCT bracket_at) AS n FROM rounds WHERE device_imei = ? AND bracket_at >= ?')
+      .get(imei, since) as { n: number } | undefined;
+    const totalRounds = total?.n ?? 0;
+    if (totalRounds === 0) return { totalRounds: 0, tags: [] };
+
+    const rows = this.db
+      .prepare(
+        `WITH per_tag AS (
+           SELECT r.tag_id,
+                  COUNT(DISTINCT r.bracket_at) AS rounds_seen,
+                  AVG(CASE WHEN r.wave_count = 1 AND (r.hops IS NULL OR r.hops <= 1) THEN 1.0 ELSE 0.0 END) AS direct_share,
+                  AVG(r.rssi) AS rssi_mean,
+                  AVG(CAST(r.rssi AS REAL) * r.rssi) - AVG(r.rssi) * AVG(r.rssi) AS rssi_var,
+                  AVG(CASE WHEN r.link_id IS NOT NULL AND r.link_id = (SELECT radio_id FROM devices WHERE imei = :imei)
+                           THEN 1.0 ELSE 0.0 END) AS via_reader_share
+             FROM readings r
+            WHERE r.device_imei = :imei AND r.bracket_at >= :since AND r.rssi IS NOT NULL
+            GROUP BY r.tag_id
+         ), best_other AS (
+           SELECT tag_id, MAX(m) AS rssi_other FROM (
+             SELECT r.tag_id, r.device_imei, AVG(r.rssi) AS m
+               FROM readings r JOIN devices d ON d.imei = r.device_imei
+              WHERE d.org_id = :org AND r.device_imei <> :imei
+                AND r.bracket_at >= :since AND r.rssi IS NOT NULL
+              GROUP BY r.tag_id, r.device_imei
+           ) GROUP BY tag_id
+         )
+         SELECT p.tag_id, p.rounds_seen, p.direct_share, p.rssi_mean, p.rssi_var, p.via_reader_share,
+                b.rssi_other
+           FROM per_tag p LEFT JOIN best_other b ON b.tag_id = p.tag_id`,
+      )
+      .all({ imei, org: orgId, since }) as Array<{
+      tag_id: string;
+      rounds_seen: number;
+      direct_share: number;
+      rssi_mean: number;
+      rssi_var: number | null;
+      via_reader_share: number;
+      rssi_other: number | null;
+    }>;
+
+    return {
+      totalRounds,
+      tags: rows.map((r) => ({
+        tagId: r.tag_id,
+        roundsSeen: r.rounds_seen,
+        directShare: r.direct_share,
+        rssiMean: r.rssi_mean,
+        // Floating-point error can make the single-pass variance very slightly
+        // negative when every reading is identical, which is exactly the case
+        // a carried tag produces.
+        rssiVariance: Math.max(0, r.rssi_var ?? 0),
+        viaReaderShare: r.via_reader_share,
+        rssiOther: r.rssi_other,
+      })),
+    };
+  }
+
+  /** Every radio id currently set across the fleet — the "that's a reader, not a tag" gate. */
+  allRadioIds(): Set<string> {
+    const rows = this.db.prepare('SELECT radio_id FROM devices WHERE radio_id IS NOT NULL').all() as Array<{
+      radio_id: string;
+    }>;
+    return new Set(rows.map((r) => r.radio_id));
+  }
+
   // --- Tag whitelist -------------------------------------------------------
 
   /** Adds tag IDs to an organisation's whitelist, ignoring ones already there. */
@@ -1026,7 +1579,7 @@ export class Store {
   listOrgTags(orgId: string): OrgTagRow[] {
     const rows = this.db
       .prepare(
-        `SELECT t.org_id, t.tag_id, t.label, t.created_at,
+        `SELECT t.org_id, t.tag_id, t.label, t.hidden, t.created_at,
                 (SELECT MAX(r.bracket_at) FROM readings r
                    JOIN devices d ON d.imei = r.device_imei
                   WHERE r.tag_id = t.tag_id AND d.org_id = t.org_id) AS last_seen_at
@@ -1037,6 +1590,7 @@ export class Store {
       org_id: string;
       tag_id: string;
       label: string | null;
+      hidden: number;
       created_at: number;
       last_seen_at: number | null;
     }>;
@@ -1044,9 +1598,20 @@ export class Store {
       orgId: r.org_id,
       tagId: r.tag_id,
       label: r.label,
+      hidden: toBool(r.hidden),
       createdAt: r.created_at,
       lastSeenAt: r.last_seen_at,
     }));
+  }
+
+  /**
+   * Switches one tag off (or back on) for the whole organisation. Any member
+   * may do this — it records something about the tag, not about the viewer, so
+   * gating it behind admin would mean the person who notices a dead tag cannot
+   * be the one to act on it.
+   */
+  setOrgTagHidden(orgId: string, tagId: string, hidden: boolean): void {
+    this.db.prepare('UPDATE org_tags SET hidden = ? WHERE org_id = ? AND tag_id = ?').run(hidden ? 1 : 0, orgId, tagId);
   }
 
   // --- Geofences -------------------------------------------------------------
@@ -1260,6 +1825,17 @@ export class Store {
          -- Never blanked: only the scraped path ever learns this one.
          unit_battery_mv  = COALESCE(excluded.unit_battery_mv, rounds.unit_battery_mv)`,
     );
+    // Same statement as `bumpExactIdentityCandidate`, prepared here so it can
+    // run inside this method's own transaction rather than opening a second one.
+    const candidateStmt = this.db.prepare(
+      `INSERT INTO device_identity_candidates
+         (device_imei, kind, value, exact, rounds, score, evidence, first_seen_at, last_seen_at)
+       VALUES (?, ?, ?, 1, 1, 0, NULL, ?, ?)
+       ON CONFLICT (device_imei, kind, value) DO UPDATE SET
+         rounds = device_identity_candidates.rounds + 1,
+         exact = 1,
+         last_seen_at = excluded.last_seen_at`,
+    );
 
     this.db.exec('BEGIN');
     try {
@@ -1277,6 +1853,16 @@ export class Store {
       if (Number(inserted.changes) === 0) {
         this.db.exec('COMMIT');
         return { duplicate: true, readingsWritten: 0 };
+      }
+
+      // Inside the transaction so a receipt and its evidence can never
+      // diverge, and after the dedupe so the firmware's retry-on-lost-200
+      // doesn't count the same round twice.
+      // `!= null` rather than `!== null`: the field is required by the type,
+      // but a caller that predates it passes nothing at all, and an absent id
+      // means the same thing as an unusable one — no evidence to record.
+      if (input.primaryTagId != null) {
+        candidateStmt.run(input.deviceImei, 'radio', input.primaryTagId, input.receivedAt, input.receivedAt);
       }
 
       for (const r of input.readings) {
