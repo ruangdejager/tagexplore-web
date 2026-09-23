@@ -284,17 +284,26 @@ export function decodeTagDiscovery(body: Uint8Array): DecodeResult {
 }
 
 /**
- * Rounds the campaign's `sessionUtc` to the same bracket the log path buckets
- * blocks into, so a campaign that arrives by both routes lands on one row
- * rather than two. Returns null when the clock is unusable — the two paths'
- * timestamps are expected to differ by a minute or two (the log has its own,
- * better time marks), but a 1970 RTC is not a discovery round.
+ * Rounds the campaign's `sessionUtc` to the bracket the log path buckets
+ * blocks into. Returns null when the clock is unusable — a 1970 RTC is not a
+ * discovery round. The push path itself no longer keys on this bracket — it
+ * starts from `sessionMomentMs` instead.
  */
 export function bracketForSession(sessionUtc: number, nowMs: number, bracketMinutes: number): number | null {
+  const at = sessionMomentMs(sessionUtc, nowMs);
+  if (at === null) return null;
+  const bracketMs = bracketMinutes * 60_000;
+  return Math.round(at / bracketMs) * bracketMs;
+}
+
+/**
+ * The campaign's own moment in ms — the key a new pushed discovery starts at —
+ * or null when the unit's RTC is plainly unset.
+ */
+export function sessionMomentMs(sessionUtc: number, nowMs: number): number | null {
   const maxUtc = Math.floor(nowMs / 1000) + MAX_SESSION_SKEW_SECONDS;
   if (!isInt(sessionUtc) || sessionUtc < MIN_SESSION_UTC || sessionUtc > maxUtc) return null;
-  const bracketMs = bracketMinutes * 60_000;
-  return Math.round((sessionUtc * 1000) / bracketMs) * bracketMs;
+  return sessionUtc * 1000;
 }
 
 export type TagDiscoveryOutcome =
@@ -317,9 +326,12 @@ export interface TagDiscoveryStoreResult {
  * Readings land in the same `readings` table the scraped path writes to, keyed
  * by the same `(bracket, device, tag)` — that is what makes a pushed reading
  * join against the rows already there for that tag rather than forming a
- * parallel set. The bracket stays the key so the two paths keep meeting on one
- * row; the exact arrival time rides along on the round beside it as
- * `receivedAt`, which is what the count history shows for a pushed round.
+ * parallel set. Which `bracket_at` that is gets resolved by the store from the
+ * campaign's session time (`Store.resolveDiscoveryAnchor`): a scrape of the
+ * same campaign or another reader's round of the same discovery is joined,
+ * while another campaign from this same reader always starts its own
+ * discovery. The exact arrival time rides along on the round as `receivedAt`,
+ * which is what the count history shows for a pushed round.
  *
  * Where the two paths disagree about a field, this one wins — see
  * `Store.writeTagDiscoveryPost`.
@@ -341,8 +353,13 @@ export function storeTagDiscovery(
   const device = store.getDevice(imei);
   if (!device) return { outcome: 'unknown-device', readingsWritten: 0, bracketAt: null };
 
-  const bracketAt = bracketForSession(campaign.sessionUtc, receivedAtMs, config.bracketMinutes);
-  if (bracketAt === null) return { outcome: 'bad-clock', readingsWritten: 0, bracketAt: null };
+  const sessionAt = sessionMomentMs(campaign.sessionUtc, receivedAtMs);
+  if (sessionAt === null) return { outcome: 'bad-clock', readingsWritten: 0, bracketAt: null };
+  // Half a bracket either side: the same reach the old nearest-bracket
+  // rounding gave two readers' clocks, without its slot boundaries.
+  const anchorWindowMs = (config.bracketMinutes * 60_000) / 2;
+  // Provisional — the store stamps the resolved anchor over it.
+  const bracketAt = sessionAt;
 
   const readings: ReadingInput[] = campaign.tags.map((tag) => ({
     bracketAt,
@@ -371,6 +388,7 @@ export function storeTagDiscovery(
     sessionUtc: campaign.sessionUtc,
     receivedAt: receivedAtMs,
     bracketAt,
+    anchorWindowMs,
     mode: campaign.mode,
     primaryVersion: campaign.primaryVersion,
     byteCount,
@@ -392,8 +410,8 @@ export function storeTagDiscovery(
       readerFw: formatPrimaryVersion(campaign.primaryVersion),
       timedOut: false,
       source: 'cbor',
-      // What makes this round's data tied to a real moment rather than only to
-      // a 15-minute bracket: when the POST actually landed on the server.
+      // What makes this round's data tied to a real moment: when the POST
+      // actually landed on the server.
       receivedAt: receivedAtMs,
     },
   });
@@ -402,12 +420,12 @@ export function storeTagDiscovery(
   // our 200 is lost on the way back, and making every open browser refetch for
   // a campaign it already has would be pure noise.
   if (!result.duplicate) {
-    bus?.publish({ type: 'readings', orgId: device.orgId, imei, at: receivedAtMs, bracketAt });
+    bus?.publish({ type: 'readings', orgId: device.orgId, imei, at: receivedAtMs, bracketAt: result.bracketAt });
   }
 
   return {
     outcome: result.duplicate ? 'duplicate' : 'stored',
     readingsWritten: result.readingsWritten,
-    bracketAt,
+    bracketAt: result.bracketAt,
   };
 }

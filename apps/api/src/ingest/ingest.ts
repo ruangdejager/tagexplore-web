@@ -115,7 +115,11 @@ function storeBlocks(store: Store, config: Config, imei: string, blocks: Discove
     }
   }
 
-  store.writeReadings(readings, rounds);
+  // Each round is written to the discovery it belongs to rather than straight
+  // to its bracket — a push of the same campaign is keyed by its exact session
+  // time, and another reader may already have started the discovery. Half a
+  // bracket either side, the same window the push path joins within.
+  store.writeReadings(readings, rounds, { anchorWindowMs: bracketMs / 2 });
   return readings.length;
 }
 

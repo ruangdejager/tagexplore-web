@@ -487,9 +487,9 @@ describe('storeTagDiscovery', () => {
 
     const rounds = store.listRoundsWindow(ORG, bracketAt - 1, bracketAt + 1);
     expect(rounds[0]).toMatchObject({ source: 'cbor', received_at: NOW_MS });
-    // The bracket is still the key both paths meet on — the arrival time rides
+    // The key is the campaign's session time — the arrival time rides
     // alongside it rather than replacing it.
-    expect(NOW_MS).not.toBe(bracketAt);
+    expect(bracketAt).toBe(SESSION_UTC * 1000);
   });
 
   it('lands a pushed reading on the row the scraped path already made for that tag', () => {
@@ -515,15 +515,117 @@ describe('storeTagDiscovery', () => {
           source: 'log',
         },
       ],
-      [],
+      [scrapedRound(bracketAt, { tagCount: 1 })],
     );
 
-    storeTagDiscovery(store, config, IMEI, campaign, NOW_MS, 65);
+    const result = storeTagDiscovery(store, config, IMEI, campaign, NOW_MS, 65);
+    // The push found the scraped round's discovery rather than starting one
+    // at its own session time.
+    expect(result.bracketAt).toBe(bracketAt);
 
     // One row per (bracket, device, tag), not two — the hex id rendering is
     // what makes the two paths agree on the key.
     const abcd = store.listReadingsWindow(ORG, bracketAt - 1, bracketAt + 1).filter((r) => r.tag_id === 'ABCD');
     expect(abcd).toHaveLength(1);
+  });
+});
+
+describe('separating discoveries', () => {
+  const OTHER_IMEI = '866049074634380';
+  const MINUTE = 60_000;
+
+  beforeEach(() => {
+    store.createDevice(OTHER_IMEI, ORG, 'Reader 380');
+    // The count history only counts whitelisted tags.
+    store.addOrgTags(ORG, ['ABCD', '1234', '3E1E']);
+  });
+
+  /** A campaign from `imei` whose session clock reads `sessionUtc`, arriving 30s later. */
+  function push(imei: string, sessionUtc: number, hex = ADVANCED_TWO_RECORDS) {
+    const result = decodeTagDiscovery(bytes(hex));
+    if (!result.ok) throw new Error(result.error);
+    return storeTagDiscovery(store, config, imei, { ...result.campaign, sessionUtc }, sessionUtc * 1000 + 30_000, 65);
+  }
+
+  it('keeps back-to-back campaigns from one reader as separate discoveries', () => {
+    // The reported case: one real discovery, then two forced empty posts a
+    // few minutes later — all inside what used to be one 15-minute bracket.
+    const first = push(IMEI, SESSION_UTC);
+    const second = push(IMEI, SESSION_UTC + 120, EMPTY_CAMPAIGN);
+    const third = push(IMEI, SESSION_UTC + 180, EMPTY_CAMPAIGN);
+
+    const keys = [first.bracketAt, second.bracketAt, third.bracketAt];
+    expect(new Set(keys).size).toBe(3);
+
+    const counts = store.listDiscoveryCounts(ORG);
+    expect(counts).toHaveLength(3);
+    const byKey = new Map(counts.map((c) => [c.bracketAt, c]));
+    // The first discovery keeps its own tags and arrival time — nothing that
+    // came after overwrote it.
+    expect(byKey.get(first.bracketAt as number)).toMatchObject({ count: 2, receivedAt: SESSION_UTC * 1000 + 30_000 });
+    expect(byKey.get(second.bracketAt as number)).toMatchObject({ count: 0, receivedAt: (SESSION_UTC + 120) * 1000 + 30_000 });
+    expect(byKey.get(third.bracketAt as number)).toMatchObject({ count: 0 });
+  });
+
+  it('merges the same discovery heard by two readers into one', () => {
+    const a = push(IMEI, SESSION_UTC);
+    const b = push(OTHER_IMEI, SESSION_UTC + 90, BASIC_ONE_RECORD);
+
+    expect(b.bracketAt).toBe(a.bracketAt);
+    const counts = store.listDiscoveryCounts(ORG);
+    expect(counts).toHaveLength(1);
+    // ABCD + 1234 from one reader, 3E1E from the other.
+    expect(counts[0]).toMatchObject({ count: 3, receivedAt: SESSION_UTC * 1000 + 30_000 });
+  });
+
+  it("does not fold a reader's next campaign into a discovery another reader joined", () => {
+    const a1 = push(IMEI, SESSION_UTC);
+    const b = push(OTHER_IMEI, SESSION_UTC + 60);
+    const a2 = push(IMEI, SESSION_UTC + 150, EMPTY_CAMPAIGN);
+
+    expect(b.bracketAt).toBe(a1.bracketAt);
+    expect(a2.bracketAt).not.toBe(a1.bracketAt);
+    expect(store.listDiscoveryCounts(ORG)).toHaveLength(2);
+  });
+
+  it('starts a new discovery once outside the window', () => {
+    const a = push(IMEI, SESSION_UTC);
+    const b = push(OTHER_IMEI, SESSION_UTC + 10 * 60);
+    expect(b.bracketAt).not.toBe(a.bracketAt);
+  });
+
+  it('reports a retry as a duplicate on the discovery its first copy landed on', () => {
+    const b = push(OTHER_IMEI, SESSION_UTC - 60);
+    const first = push(IMEI, SESSION_UTC);
+    expect(first.bracketAt).toBe(b.bracketAt);
+
+    const retry = push(IMEI, SESSION_UTC);
+    expect(retry).toMatchObject({ outcome: 'duplicate', bracketAt: first.bracketAt });
+  });
+
+  it('lands a later scrape of a pushed campaign on the push, and re-scrapes on the same row', () => {
+    const pushed = push(IMEI, SESSION_UTC);
+    const scrapedBracket = bracketForSession(SESSION_UTC, NOW_MS, config.bracketMinutes) as number;
+    expect(scrapedBracket).not.toBe(pushed.bracketAt);
+
+    const round: RoundInput = {
+      bracketAt: scrapedBracket,
+      deviceImei: IMEI,
+      tagCount: 2,
+      durationSeconds: 47,
+      unitBatteryMv: 4019,
+      readerFw: 'v2.4.0',
+      timedOut: false,
+      source: 'log',
+      receivedAt: null,
+    };
+    const window = { anchorWindowMs: (config.bracketMinutes * MINUTE) / 2 };
+    store.writeReadings([], [round], window);
+    store.writeReadings([], [round], window);
+
+    const rounds = store.listRoundsWindow(ORG, 0, Number.MAX_SAFE_INTEGER);
+    expect(rounds).toHaveLength(1);
+    expect(rounds[0]).toMatchObject({ bracket_at: pushed.bracketAt, source: 'cbor', duration_seconds: null, unit_battery_mv: 4019 });
   });
 });
 

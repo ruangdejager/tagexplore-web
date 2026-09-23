@@ -385,8 +385,9 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   // of both, the same way it's left off the map.
   const toggledSnapshots = useMemo(() => snapshots.filter((s) => !hiddenFromMap.has(s.tagId)), [snapshots, hiddenFromMap]);
   const watchedTagIds = useMemo(() => new Set(toggledSnapshots.map((s) => s.tagId)), [toggledSnapshots]);
-  // Always the live latest round's time, regardless of what's being browsed —
-  // what the LIVE badge shows as the thing it would jump back to.
+  // The live latest reading's bracket, regardless of what's being browsed. The
+  // count panel only uses it as a "new round landed" signal; the time it shows
+  // beside LIVE is the latest discovery's real time, fetched by the panel.
   const latestDiscoveryAt = useMemo(
     () => (toggledSnapshots.length > 0 ? Math.max(...toggledSnapshots.map((s) => s.lastSeenAt)) : null),
     [toggledSnapshots],

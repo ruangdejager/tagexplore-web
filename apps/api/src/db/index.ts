@@ -436,7 +436,14 @@ export interface TagDiscoveryPostInput {
   primaryTagId: string | null;
   sessionUtc: number;
   receivedAt: number;
+  /**
+   * Where the round lands. With `anchorWindowMs` set this is only the
+   * campaign's own moment, and the discovery it joins is resolved from it —
+   * see `Store.resolveDiscoveryAnchor`. Without it, it is used verbatim.
+   */
   bracketAt: number;
+  /** How far either side of `bracketAt` an existing discovery may be joined. */
+  anchorWindowMs?: number;
   mode: number;
   primaryVersion: number;
   byteCount: number;
@@ -1707,8 +1714,13 @@ export class Store {
    * supply voltage, printed on the log's time marks and absent from the CBOR
    * body — so that single column is still filled in on a pushed round, which is
    * what the `COALESCE` below is for. Nothing else of a pushed round is touched.
+   *
+   * With `anchorWindowMs` set, each round's bracket is first resolved to the
+   * discovery it belongs to (`resolveDiscoveryAnchor`) — which is how a scraped
+   * round finds a pushed one whose key is its exact session time rather than a
+   * 15-minute slot. Without it, brackets are written verbatim.
    */
-  writeReadings(readings: ReadingInput[], rounds: RoundInput[]): number {
+  writeReadings(readings: ReadingInput[], rounds: RoundInput[], opts: { anchorWindowMs?: number } = {}): number {
     const readingStmt = this.db.prepare(
       `INSERT INTO readings
        (bracket_at, device_imei, tag_id, battery_mv, rssi, hops, wave_count, movement_state, lat, lon, has_gps, fw_patch, gps_age_s, link_id, source)
@@ -1739,9 +1751,24 @@ export class Store {
 
     this.db.exec('BEGIN');
     try {
+      // Resolved inside the transaction so a push landing mid-poll can't slip
+      // a competing anchor in between the lookup and the write. Keyed by
+      // device and the bracket the caller computed; a reading follows its
+      // round there.
+      const anchors = new Map<string, number>();
+      if (opts.anchorWindowMs !== undefined) {
+        for (const r of rounds) {
+          const key = `${r.deviceImei}|${r.bracketAt}`;
+          if (!anchors.has(key)) {
+            anchors.set(key, this.resolveDiscoveryAnchor(r.deviceImei, r.bracketAt, opts.anchorWindowMs, 'log'));
+          }
+        }
+      }
+      const anchorOf = (imei: string, bracketAt: number): number => anchors.get(`${imei}|${bracketAt}`) ?? bracketAt;
+
       for (const r of readings) {
         readingStmt.run(
-          r.bracketAt,
+          anchorOf(r.deviceImei, r.bracketAt),
           r.deviceImei,
           r.tagId,
           r.batteryMv,
@@ -1760,7 +1787,7 @@ export class Store {
       }
       for (const r of rounds) {
         roundStmt.run(
-          r.bracketAt,
+          anchorOf(r.deviceImei, r.bracketAt),
           r.deviceImei,
           r.tagCount,
           r.durationSeconds,
@@ -1783,10 +1810,12 @@ export class Store {
    * Writes one pushed tag-discovery campaign — receipt, readings and round —
    * in a single transaction.
    *
-   * The receipt row goes in first and its `ON CONFLICT DO NOTHING` is the
-   * dedupe: the unit retries a failed POST once inside the same session, so if
-   * our 200 was lost on the way back the identical campaign arrives again and
-   * the second one has nothing to do.
+   * The receipt is the dedupe: the unit retries a failed POST once inside the
+   * same session, so if our 200 was lost on the way back the identical
+   * campaign arrives again and the second one has nothing to do. Only a
+   * campaign that isn't a retry has its discovery resolved
+   * (`resolveDiscoveryAnchor`, when `anchorWindowMs` is given) — the returned
+   * `bracketAt` is where it landed, or where the original did for a retry.
    *
    * **This path takes precedence over the log-scraping one**, in whichever
    * order the two arrive. A scraped row describes the same discovery more
@@ -1801,7 +1830,11 @@ export class Store {
    * found (the `COALESCE` below), and the scrape is still allowed to fill it in
    * later on a round this path wrote.
    */
-  writeTagDiscoveryPost(input: TagDiscoveryPostInput): { duplicate: boolean; readingsWritten: number } {
+  writeTagDiscoveryPost(input: TagDiscoveryPostInput): { duplicate: boolean; readingsWritten: number; bracketAt: number } {
+    const existingStmt = this.db.prepare(
+      `SELECT bracket_at FROM tag_discovery_posts
+        WHERE device_imei = ? AND primary_device_id = ? AND session_utc = ?`,
+    );
     const postStmt = this.db.prepare(
       `INSERT INTO tag_discovery_posts
        (device_imei, primary_device_id, session_utc, received_at, bracket_at, mode, primary_version, record_count, byte_count)
@@ -1839,14 +1872,30 @@ export class Store {
          last_seen_at = excluded.last_seen_at`,
     );
 
+    let bracketAt = input.bracketAt;
     this.db.exec('BEGIN');
     try {
+      // The dedupe is checked before the anchor is resolved: a retry must
+      // report the discovery its first copy landed on, and resolving it
+      // afresh would skip that one — it is this device's own pushed round.
+      const existing = existingStmt.get(input.deviceImei, input.primaryDeviceId, input.sessionUtc) as
+        | { bracket_at: number }
+        | undefined;
+      if (existing) {
+        this.db.exec('COMMIT');
+        return { duplicate: true, readingsWritten: 0, bracketAt: existing.bracket_at };
+      }
+
+      if (input.anchorWindowMs !== undefined) {
+        bracketAt = this.resolveDiscoveryAnchor(input.deviceImei, input.bracketAt, input.anchorWindowMs, 'cbor');
+      }
+
       const inserted = postStmt.run(
         input.deviceImei,
         input.primaryDeviceId,
         input.sessionUtc,
         input.receivedAt,
-        input.bracketAt,
+        bracketAt,
         input.mode,
         input.primaryVersion,
         input.readings.length,
@@ -1854,7 +1903,7 @@ export class Store {
       );
       if (Number(inserted.changes) === 0) {
         this.db.exec('COMMIT');
-        return { duplicate: true, readingsWritten: 0 };
+        return { duplicate: true, readingsWritten: 0, bracketAt };
       }
 
       // Inside the transaction so a receipt and its evidence can never
@@ -1869,7 +1918,7 @@ export class Store {
 
       for (const r of input.readings) {
         readingStmt.run(
-          r.bracketAt,
+          bracketAt,
           r.deviceImei,
           r.tagId,
           r.batteryMv,
@@ -1888,7 +1937,7 @@ export class Store {
       }
       const round = input.round;
       roundStmt.run(
-        round.bracketAt,
+        bracketAt,
         round.deviceImei,
         round.tagCount,
         round.durationSeconds,
@@ -1903,7 +1952,51 @@ export class Store {
       this.db.exec('ROLLBACK');
       throw err;
     }
-    return { duplicate: false, readingsWritten: input.readings.length };
+    return { duplicate: false, readingsWritten: input.readings.length, bracketAt };
+  }
+
+  /**
+   * Picks the `bracket_at` a new round should land on — which discovery it is
+   * part of. Run inside the writer's own transaction.
+   *
+   * A discovery used to be "one 15-minute bracket", which merged across
+   * readers for free but also merged one reader's back-to-back campaigns into
+   * a single row, each overwriting the last. Now the key is an anchor: the
+   * first round of a discovery sets it, and later rounds within `windowMs` of
+   * it join it. The rules, nearest candidate winning at each step:
+   *
+   * 1. This device's own round in the window — but for a push, only a scraped
+   *    one. A push replaces the scrape of the same campaign; another pushed
+   *    round from this device is a different campaign (the receipt dedupe has
+   *    already caught a true retry), so it must not be joined.
+   *    A scrape joins any of its own rounds, which is what keeps re-reading the
+   *    same log idempotent and what lets it meet a push of the same campaign.
+   * 2. Another device's discovery this device has no round in yet — the
+   *    cross-reader merge.
+   * 3. Otherwise `atMs` itself starts a new discovery.
+   */
+  resolveDiscoveryAnchor(imei: string, atMs: number, windowMs: number, source: DiscoverySource): number {
+    const own = this.db
+      .prepare(
+        `SELECT bracket_at FROM rounds
+          WHERE device_imei = ? AND bracket_at BETWEEN ? AND ?` +
+          (source === 'cbor' ? ` AND source <> 'cbor'` : '') +
+          ` ORDER BY ABS(bracket_at - ?) ASC, bracket_at ASC LIMIT 1`,
+      )
+      .get(imei, atMs - windowMs, atMs + windowMs, atMs) as { bracket_at: number } | undefined;
+    if (own) return own.bracket_at;
+
+    const other = this.db
+      .prepare(
+        `SELECT DISTINCT o.bracket_at FROM rounds o
+          WHERE o.device_imei <> ? AND o.bracket_at BETWEEN ? AND ?
+            AND NOT EXISTS (SELECT 1 FROM rounds m WHERE m.device_imei = ? AND m.bracket_at = o.bracket_at)
+          ORDER BY ABS(o.bracket_at - ?) ASC, o.bracket_at ASC LIMIT 1`,
+      )
+      .get(imei, atMs - windowMs, atMs + windowMs, imei, atMs) as { bracket_at: number } | undefined;
+    if (other) return other.bracket_at;
+
+    return atMs;
   }
 
   /** Receipts for one device's pushed campaigns, newest first — an admin/debug view. */

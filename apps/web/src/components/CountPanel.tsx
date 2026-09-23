@@ -26,8 +26,8 @@ interface Props {
   historyAt: number | null;
   onSelectHistory: (bracketAt: number) => void;
   onGoLive: () => void;
-  /** Always the *live* latest discovery's time, regardless of what round is
-   *  being browsed — shown beside LIVE as what it would jump back to. */
+  /** The live latest reading's bracket, from the tag snapshots. Not shown —
+   *  it only tells this panel a new round has landed and it should refetch. */
   latestDiscoveryAt: number | null;
   /** Devices switched off in the main list — the count history's own fetch
    *  needs this too, since it comes from a separate query than `snapshots`. */
@@ -95,6 +95,11 @@ export function CountPanel({
   const [showHistory, setShowHistory] = useState(false);
   const [history, setHistory] = useState<DiscoveryCountPoint[] | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
+  // The newest discovery, fetched on its own (the history list only loads
+  // once asked for) so the time beside LIVE is the same real time its history
+  // row shows — the arrival time for a pushed round — and so it moves on a
+  // round that heard no whitelisted tag too.
+  const [latest, setLatest] = useState<DiscoveryCountPoint | null>(null);
 
   const count = checkedInTagIds(snapshots, windowChoice, now).size;
 
@@ -116,6 +121,19 @@ export function CountPanel({
   // A device switched off refetches the same way, since that changes every
   // row's own count too.
   useEffect(() => {
+    let cancelled = false;
+    api
+      .fetchDiscoveryCounts(orgId, 1, excludeDeviceImeis)
+      .then((res) => {
+        if (!cancelled) setLatest(res.counts[0] ?? null);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [latestDiscoveryAt, liveNonce, orgId, excludeDeviceImeis]);
+
+  useEffect(() => {
     if (history === null) return;
     api
       .fetchDiscoveryCounts(orgId, 200, excludeDeviceImeis)
@@ -128,9 +146,16 @@ export function CountPanel({
   return (
     <div className="card count-panel">
       <div className="live-status">
-        {latestDiscoveryAt !== null && (
-          <span className="live-at" title="Time of the latest discovery round">
-            {timestamp(latestDiscoveryAt)}
+        {latest !== null && (
+          <span
+            className="live-at"
+            title={
+              latest.receivedAt !== null
+                ? "When the latest discovery round's data arrived"
+                : 'Latest discovery round — scraped from the log, so this is its bracket'
+            }
+          >
+            {timestamp(latest.receivedAt ?? latest.bracketAt)}
           </span>
         )}
         {/* Two different things, deliberately in one control: whether the map
