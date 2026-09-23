@@ -26,17 +26,39 @@ const TAG_ID_PATTERN = /^[0-9A-F]{1,4}$/;
 const UNCLAIMED_WINDOW_MS = 30 * 86_400_000;
 
 /**
- * Reads a manually-entered identity value off a request body. Returns
- * `undefined` when the field was absent (leave it alone), `null` for an empty
- * string (clear it, which hands the field back to the inference), or the
- * normalised value.
+ * What an edit to one of the learned identities is asking for.
+ *
+ * Three of these are states the field can end up in, and the two null ones are
+ * the reason this is not simply `string | null`: "nobody has worked it out
+ * yet" and "there is no such id" look identical in the column but must behave
+ * oppositely, one inviting the inference in and the other shutting it out.
  */
-function readIdentityValue(raw: unknown): string | null | undefined | { error: string } {
+type IdentityEdit =
+  | { kind: 'clear' }
+  | { kind: 'none' }
+  | { kind: 'set'; value: string }
+  | { kind: 'error'; error: string };
+
+/**
+ * Reads a manually-entered identity value off a request body. `undefined` for
+ * an absent field (leave it alone), `clear` for an empty string (hand the
+ * field back to the inference), `none` for JSON `null` (the admin is stating
+ * that this reader has no such id), or the normalised value.
+ */
+function readIdentityValue(raw: unknown): IdentityEdit | undefined {
+  if (raw === null) return { kind: 'none' };
   if (typeof raw !== 'string') return undefined;
   const trimmed = raw.trim().toUpperCase();
-  if (trimmed === '') return null;
-  if (!TAG_ID_PATTERN.test(trimmed)) return { error: `"${trimmed}" is not a 1-4 character hex id.` };
-  return trimmed;
+  if (trimmed === '') return { kind: 'clear' };
+  if (!TAG_ID_PATTERN.test(trimmed)) return { kind: 'error', error: `"${trimmed}" is not a 1-4 character hex id.` };
+  return { kind: 'set', value: trimmed };
+}
+
+/** Applies one such edit through the store's setter for that field. */
+function applyIdentityEdit(edit: IdentityEdit | undefined, set: (value: string | null, latched: boolean) => void): void {
+  if (edit === undefined || edit.kind === 'error') return;
+  if (edit.kind === 'set') set(edit.value, true);
+  else set(null, edit.kind === 'none');
 }
 
 type Env = { Variables: { userId: string } };
@@ -223,15 +245,20 @@ export function createAdminApi(deps: AdminDeps): Hono<Env> {
     const label = typeof body['label'] === 'string' ? body['label'].trim() : '';
 
     const radioId = readIdentityValue(body['radioId']);
-    if (radioId && typeof radioId === 'object') return c.json({ error: radioId.error }, 400);
+    if (radioId?.kind === 'error') return c.json({ error: radioId.error }, 400);
     const carriedTagId = readIdentityValue(body['carriedTagId']);
-    if (carriedTagId && typeof carriedTagId === 'object') return c.json({ error: carriedTagId.error }, 400);
+    if (carriedTagId?.kind === 'error') return c.json({ error: carriedTagId.error }, 400);
 
     if (!IMEI_PATTERN.test(imei)) return c.json({ error: 'An IMEI is 14-16 digits.' }, 400);
     if (!deps.store.getOrg(orgId)) return c.json({ error: 'No organisation with that id.' }, 404);
     if (deps.store.getDevice(imei)) return c.json({ error: 'That IMEI is already registered.' }, 409);
 
-    deps.store.createDevice(imei, orgId, label, radioId ?? null, carriedTagId ?? null);
+    // Created bare, then edited: the setters are the only place that knows how
+    // a value pairs with its `*_source`, and going through them here means a
+    // reader can be registered as carrying no tag in one request.
+    deps.store.createDevice(imei, orgId, label);
+    applyIdentityEdit(radioId, (value, latched) => deps.store.setRadioId(imei, value, latched));
+    applyIdentityEdit(carriedTagId, (value, latched) => deps.store.setCarriedTag(imei, value, latched));
     return c.json({ device: deps.store.getDevice(imei) }, 201);
   });
 
@@ -281,16 +308,17 @@ export function createAdminApi(deps: AdminDeps): Hono<Env> {
 
     // The two learned identities have their own setters, because each has to
     // keep its `*_source` column in step — writing one marks it 'manual', which
-    // is the latch the inference can never write through, and clearing one
-    // hands the field back to the inference.
+    // is the latch the inference can never write through, clearing one hands
+    // the field back to the inference, and a JSON `null` latches the absence
+    // itself: this reader carries no tag, so stop trying to find one.
     const radioId = readIdentityValue(body['radioId']);
-    if (radioId && typeof radioId === 'object') return c.json({ error: radioId.error }, 400);
+    if (radioId?.kind === 'error') return c.json({ error: radioId.error }, 400);
     const carriedTagId = readIdentityValue(body['carriedTagId']);
-    if (carriedTagId && typeof carriedTagId === 'object') return c.json({ error: carriedTagId.error }, 400);
+    if (carriedTagId?.kind === 'error') return c.json({ error: carriedTagId.error }, 400);
 
     deps.store.updateDevice(imei, patch);
-    if (radioId !== undefined) deps.store.setRadioId(imei, radioId as string | null);
-    if (carriedTagId !== undefined) deps.store.setCarriedTag(imei, carriedTagId as string | null);
+    applyIdentityEdit(radioId, (value, latched) => deps.store.setRadioId(imei, value, latched));
+    applyIdentityEdit(carriedTagId, (value, latched) => deps.store.setCarriedTag(imei, value, latched));
     return c.json({ device: deps.store.getDevice(imei) });
   });
 

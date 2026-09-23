@@ -17,6 +17,8 @@ import { createTagDiscoveryApi } from '../src/routes/tagDiscovery.js';
 const ADVANCED_TWO_RECORDS =
   'A5011A00A1B2C302194FB0031A6AA1F940040005828B19ABCD01023856190FAC013A017F5A7F1A01B237550819B2C3018B19123402033865190F32000000070000';
 const EMPTY_CAMPAIGN = 'A5011A00A1B2C302194FB0031A6AA1F94004000580';
+/** The same campaign with key 5 left out altogether rather than sent empty. */
+const NO_RECORDS_KEY = 'A4011A00A1B2C302194FB0031A6AA1F9400400';
 const BASIC_ONE_RECORD = 'A5011A00A1B2C302194FB0031A6AA1F9400401058189193E1E190E35384301163A017F5A7F1A01B2375519015901';
 
 const PRIMARY_DEVICE_ID = 0x00a1b2c3;
@@ -130,6 +132,25 @@ describe('decodeTagDiscovery', () => {
     if (!result.ok) return;
     expect(result.campaign.tags).toEqual([]);
     expect(result.campaign.skippedRecords).toBe(0);
+  });
+
+  it('treats a missing records key the same as an empty one', () => {
+    // Either shape is a campaign that heard nothing, and both have to reach
+    // the store: a discovery that found no tags is a round of zero, and
+    // rejecting it here would make it disappear instead.
+    const result = decodeTagDiscovery(bytes(NO_RECORDS_KEY));
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.campaign.tags).toEqual([]);
+    expect(result.ok && result.campaign.skippedRecords).toBe(0);
+  });
+
+  it('still rejects a records key that is there and is not an array', () => {
+    // Not the same thing as saying nothing: this is a malformed body, and
+    // reading it as "heard nothing" would record an observation nobody made.
+    expect(decodeTagDiscovery(bytes('A5011A00A1B2C302194FB0031A6AA1F9400400051864'))).toEqual({
+      ok: false,
+      error: expect.stringContaining('not an array'),
+    });
   });
 
   it('renders ids as unpadded uppercase hex, the way the log path stores them', () => {
@@ -307,6 +328,18 @@ describe('storeTagDiscovery', () => {
     expect(result.readingsWritten).toBe(0);
     const bracketAt = result.bracketAt as number;
     expect(store.listRoundsWindow(ORG, bracketAt - 1, bracketAt + 1)).toHaveLength(1);
+  });
+
+  it('shows a campaign that heard nothing in the count history, as a zero', () => {
+    store.addOrgTags(ORG, ['ABCD']);
+    const result = storeTagDiscovery(store, config, IMEI, decoded(NO_RECORDS_KEY), NOW_MS, 19);
+    expect(result.outcome).toBe('stored');
+
+    // The point of the row: the reader ran and found nothing, which is not the
+    // same claim as a gap in the history, where nothing ran at all.
+    const counts = store.listDiscoveryCounts(ORG);
+    expect(counts).toHaveLength(1);
+    expect(counts[0]).toMatchObject({ bracketAt: result.bracketAt, count: 0, source: 'cbor' });
   });
 
   it('dedupes a retried campaign on (imei, primaryDeviceId, sessionUtc)', () => {

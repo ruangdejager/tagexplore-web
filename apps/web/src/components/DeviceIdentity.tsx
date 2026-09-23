@@ -41,6 +41,13 @@ export function pushStatusClass(device: DeviceRow): string {
  * until the field is cleared. That is the whole contract with the person using
  * this table, so the badge states which side of it the value is on rather than
  * leaving it to be inferred from nothing.
+ *
+ * An empty cell is two different answers, which is what the "no tag" toggle is
+ * for. Left alone, empty means nobody knows yet and the inference keeps
+ * looking. Toggled on, it means this reader carries no tag at all — a stated
+ * fact, latched the same way a typed value is, because otherwise the inference
+ * goes on offering whichever tag it hears loudest and the cell fills itself
+ * back in with a wrong answer every time it is cleared.
  */
 export function IdentityCell({
   device,
@@ -61,25 +68,47 @@ export function IdentityCell({
 }): JSX.Element {
   const value = field === 'radioId' ? device.radioId : device.carriedTagId;
   const source = field === 'radioId' ? device.radioIdSource : device.carriedTagSource;
+  const statedNone = value === null && source === 'manual';
+
+  const write = (next: string | null): Promise<void> =>
+    run(() => api.updateDevice(device.imei, field === 'radioId' ? { radioId: next } : { carriedTagId: next })).then(
+      reload,
+    );
 
   return (
     <td className="mono identity-cell">
       <input
-        // Keyed on the value so a change made elsewhere — an inference run, or
-        // accepting a candidate — actually appears. An uncontrolled input
-        // holding a stale `defaultValue` would keep showing the old one.
-        key={value ?? ''}
+        // Keyed on the value *and* its source so a change made elsewhere — an
+        // inference run, accepting a candidate, or the toggle beside it —
+        // actually appears. An uncontrolled input holding a stale
+        // `defaultValue` would keep showing the old one, and the two empty
+        // states differ only in the source.
+        key={`${source ?? ''}:${value ?? ''}`}
         defaultValue={value ?? ''}
-        placeholder="none"
+        placeholder={statedNone ? 'no tag' : 'unknown'}
         title={title}
         onBlur={(e) => {
           const next = e.target.value.trim().toUpperCase();
           if (next === (value ?? '')) return;
-          const patch = field === 'radioId' ? { radioId: next } : { carriedTagId: next };
-          void run(() => api.updateDevice(device.imei, patch)).then(reload);
+          void write(next);
         }}
       />
       {source === 'auto' && <span className="identity-badge">auto</span>}
+      {field === 'carriedTagId' && (
+        <button
+          type="button"
+          className={statedNone ? 'identity-none is-on' : 'identity-none'}
+          aria-pressed={statedNone}
+          title={
+            statedNone
+              ? 'Recorded as carrying no tag. Turn this off to hand the field back to the inference.'
+              : 'Record that this reader carries no tag, which also stops the inference filling one in.'
+          }
+          onClick={() => void write(statedNone ? '' : null)}
+        >
+          no tag
+        </button>
+      )}
       <button
         type="button"
         className="identity-expand"

@@ -199,6 +199,24 @@ describe('admin API', () => {
     expect((await post('/api/admin/devices', { imei: '866049074634379', orgId: org.org.id }, cookie)).status).toBe(409);
   });
 
+  it('tells an empty carried tag apart from a stated absence', async () => {
+    const org = (await (await post('/api/admin/orgs', { name: 'Groenvley' }, cookie)).json()) as {
+      org: { id: string };
+    };
+    const imei = '866049074634379';
+    await post('/api/admin/devices', { imei, orgId: org.org.id, carriedTagId: '3E1E' }, cookie);
+
+    // An empty string hands the field back to the inference.
+    await patch(`/api/admin/devices/${imei}`, { carriedTagId: '' }, cookie);
+    expect(store.getDevice(imei)).toMatchObject({ carriedTagId: null, carriedTagSource: null });
+
+    // A JSON null says there is no tag to find, and latches that.
+    await patch(`/api/admin/devices/${imei}`, { carriedTagId: null }, cookie);
+    expect(store.getDevice(imei)).toMatchObject({ carriedTagId: null, carriedTagSource: 'manual' });
+    store.applyInferredCarriedTag(imei, 'AAAA');
+    expect(store.getDevice(imei)?.carriedTagId).toBeNull();
+  });
+
   it('refuses to remove the last admin', async () => {
     const id = store.getUserByUsername('founder')!.id;
     const res = await patch(`/api/admin/users/${id}`, { role: 'client' }, cookie);

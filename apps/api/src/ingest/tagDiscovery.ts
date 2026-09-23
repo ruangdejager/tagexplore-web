@@ -23,7 +23,9 @@
  *   3: sessionUtc       uint32  unix seconds, the *unit's* RTC when it accepted
  *                               the campaign — not when the campaign was captured
  *   4: mode             uint    0 = advanced, 1 = basic
- *   5: records          array   positional arrays, 0..64 (advanced) / 0..32 (basic)
+ *   5: records          array   positional arrays, 0..64 (advanced) / 0..32 (basic);
+ *                               an empty array, or the key left out entirely,
+ *                               is a campaign that heard nothing
  *   6: durationS        uint    seconds, the unit's own measurement of how long
  *                               the discovery campaign took; 0 = not measured
  *                               (always 0 on a basic-mode campaign — see below)
@@ -235,18 +237,28 @@ export function decodeTagDiscovery(body: Uint8Array): DecodeResult {
   if (mode !== MODE_ADVANCED && mode !== MODE_BASIC) {
     return { ok: false, error: `Key 4 (mode) must be ${MODE_ADVANCED} or ${MODE_BASIC}, got ${String(decoded.get(4))}.` };
   }
-  if (!Array.isArray(records)) return { ok: false, error: 'Key 5 (records) missing or not an array.' };
+  // A campaign that heard nothing may say so either way — an empty array, or
+  // no key 5 at all — and both are results, not faults. The distinction that
+  // still matters is a key 5 that is there and is not an array: that is a
+  // malformed body, and calling it "heard nothing" would turn a decoder fault
+  // into a recorded observation.
+  if (records !== undefined && !Array.isArray(records)) {
+    return { ok: false, error: 'Key 5 (records) is present but not an array.' };
+  }
+  const recordList: unknown[] = Array.isArray(records) ? records : [];
 
   const limit = mode === MODE_ADVANCED ? MAX_ADVANCED_RECORDS : MAX_BASIC_RECORDS;
-  if (records.length > limit) {
-    return { ok: false, error: `Record count ${records.length} exceeds the firmware's limit of ${limit}.` };
+  if (recordList.length > limit) {
+    return { ok: false, error: `Record count ${recordList.length} exceeds the firmware's limit of ${limit}.` };
   }
 
-  // An empty array is a meaningful, valid result — "this primary heard nothing
-  // this cycle" — and is still posted, so it must not be treated as an error.
+  // No records is a meaningful, valid result — "this primary heard nothing this
+  // cycle" — and is still posted, so it must not be treated as an error. It is
+  // stored as a round of zero tags, which is how the count history shows a
+  // discovery that ran and found nothing rather than showing nothing at all.
   const tags: TagReading[] = [];
   let skippedRecords = 0;
-  for (const record of records) {
+  for (const record of recordList) {
     const tag = Array.isArray(record)
       ? mode === MODE_ADVANCED
         ? advancedRecord(record)

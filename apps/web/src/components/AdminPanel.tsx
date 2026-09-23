@@ -564,7 +564,7 @@ function DevicesTab({ orgs, run }: { orgs: OrganisationRow[]; run: Run }): JSX.E
               <IdentityCell
                 device={device}
                 field="carriedTagId"
-                title="The ordinary tag on the same animal that carries this reader. Clearing it hands the field back to the inference."
+                title="The ordinary tag on the same animal that carries this reader. Clearing it hands the field back to the inference; “no tag” states that there is none to find."
                 expanded={openIdentity === device.imei}
                 onToggleExpanded={() => setOpenIdentity((v) => (v === device.imei ? null : device.imei))}
                 run={run}

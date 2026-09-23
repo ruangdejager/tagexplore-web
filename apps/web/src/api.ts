@@ -258,6 +258,13 @@ export const createDevice = (
 ): Promise<{ device: DeviceRow }> =>
   request('/api/admin/devices', { method: 'POST', ...json({ imei, orgId, label, radioId, carriedTagId }) });
 
+/**
+ * The two learned identities each take three values, and `undefined` is not
+ * one of them — leaving a field out is how a patch says "don't touch it".
+ * `''` clears the field and hands it back to the inference; `null` states that
+ * the reader has no such id, which the inference is then held to.
+ */
+
 export const updateDevice = (
   imei: string,
   patch: Partial<
@@ -271,10 +278,8 @@ export const updateDevice = (
       | 'reportCountPerDay'
       | 'pollOffsetMinutes'
       | 'ingestMode'
-      | 'radioId'
-      | 'carriedTagId'
     >
-  >,
+  > & { radioId?: string | null; carriedTagId?: string | null },
 ): Promise<{ device: DeviceRow }> => request(`/api/admin/devices/${imei}`, { method: 'PATCH', ...json(patch) });
 
 /** What the inference has to go on for one reader, and why it did or didn't choose each candidate. */

@@ -1627,3 +1627,29 @@ footer {
   font-size: 9px;
   color: var(--ink-dim);
 }
+
+/* The "this reader carries no tag" latch. Styled as a badge rather than a
+   button because that is what it reads as once it is on — a label on the cell
+   saying the empty value is an answer, not a gap. */
+.identity-none {
+  margin-left: 5px;
+  padding: 0 4px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: none;
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--ink-dim);
+  cursor: pointer;
+  opacity: 0.45;
+}
+
+.identity-none:hover {
+  opacity: 0.8;
+}
+
+.identity-none.is-on {
+  border-color: var(--ink-dim);
+  color: var(--ink);
+  opacity: 1;
+}

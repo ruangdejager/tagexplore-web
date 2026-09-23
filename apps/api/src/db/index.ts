@@ -142,10 +142,16 @@ CREATE TABLE IF NOT EXISTS devices (
   -- means it has never been set, so inference is free to fill it in — which is
   -- also what clearing the field in the admin panel returns it to, and how a
   -- reader is handed back to the inference.
+  --
+  -- The latch is on the source, not the value, so 'manual' with a NULL id is a
+  -- state in its own right: an admin saying there is no such id, which the
+  -- inference is shut out of exactly as if a value had been typed.
   radio_id_source         TEXT,
-  -- The ordinary tag carried by the same animal that carries this reader.
-  -- There is always one, and it is the answer to "where was this reader
-  -- during that discovery" whenever the reader's own fix is too old to apply.
+  -- The ordinary tag carried by the same animal that carries this reader: the
+  -- answer to "where was this reader during that discovery" whenever the
+  -- reader's own fix is too old to apply. Most readers have one; a reader that
+  -- demonstrably does not is recorded as such by latching this NULL, so the
+  -- inference stops offering the strongest tag it happens to hear.
   carried_tag_id          TEXT,
   carried_tag_source      TEXT,
   -- Last time the identity inference ran for this reader, so a restart does
@@ -1005,30 +1011,16 @@ export class Store {
 
   // --- Devices -------------------------------------------------------------
 
-  createDevice(
-    imei: string,
-    orgId: string,
-    label: string,
-    radioId: string | null = null,
-    carriedTagId: string | null = null,
-  ): void {
-    // A value given at creation was typed by an admin, so it is latched
-    // 'manual' straight away — same rule as setting it later.
+  /**
+   * Registers a reader with neither identity known. Anything an admin typed at
+   * creation is written straight after with `setRadioId` / `setCarriedTag`, so
+   * that the rule about how a value pairs with its `*_source` lives in one
+   * place rather than being spelled out again here.
+   */
+  createDevice(imei: string, orgId: string, label: string): void {
     this.db
-      .prepare(
-        `INSERT INTO devices (imei, org_id, label, radio_id, radio_id_source, carried_tag_id, carried_tag_source, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        imei,
-        orgId,
-        label,
-        radioId,
-        radioId === null ? null : 'manual',
-        carriedTagId,
-        carriedTagId === null ? null : 'manual',
-        Date.now(),
-      );
+      .prepare('INSERT INTO devices (imei, org_id, label, created_at) VALUES (?, ?, ?, ?)')
+      .run(imei, orgId, label, Date.now());
   }
 
   private static toDeviceRow(row: {
@@ -1286,16 +1278,26 @@ export class Store {
    * The admin's way in. Passing null clears both columns, which hands the
    * field back to the inference.
    */
-  setRadioId(imei: string, radioId: string | null): void {
+  /**
+   * An admin's only way in, for either identity.
+   *
+   * There are three states, not two, and `latched` is what separates the two
+   * that look alike. A null value that is latched says "this reader has no
+   * such id" — an answer, held against the inference exactly as a typed one
+   * is. A null value that is not latched says "nobody knows yet", and hands
+   * the field back. Defaulting `latched` from the value keeps the ordinary
+   * case — typing a value, or clearing it — reading the way it always did.
+   */
+  setRadioId(imei: string, radioId: string | null, latched: boolean = radioId !== null): void {
     this.db
       .prepare('UPDATE devices SET radio_id = ?, radio_id_source = ? WHERE imei = ?')
-      .run(radioId, radioId === null ? null : 'manual', imei);
+      .run(radioId, latched ? 'manual' : null, imei);
   }
 
-  setCarriedTag(imei: string, tagId: string | null): void {
+  setCarriedTag(imei: string, tagId: string | null, latched: boolean = tagId !== null): void {
     this.db
       .prepare('UPDATE devices SET carried_tag_id = ?, carried_tag_source = ? WHERE imei = ?')
-      .run(tagId, tagId === null ? null : 'manual', imei);
+      .run(tagId, latched ? 'manual' : null, imei);
   }
 
   /**
@@ -1975,6 +1977,14 @@ export class Store {
    * "the latest discovery"; the rest is what the count-history list scrolls
    * through.
    *
+   * The brackets come from the rounds as well as the readings, which is what
+   * puts a zero on the list. A discovery that heard nothing — or heard only
+   * tags this organisation has not whitelisted — writes a round row and no
+   * readings, and driving this off the readings alone made that campaign
+   * vanish as though the reader had never reported. A reader that ran and
+   * found nothing is a result, and a gap in the history is a different claim
+   * entirely: that nothing ran.
+   *
    * The timing columns follow the same precedence the writes do: if any of the
    * bracket's rounds was pushed to us, the bracket is reported as `cbor` and
    * only the pushed rounds are consulted for its timing; otherwise it falls
@@ -1992,8 +2002,9 @@ export class Store {
    *   (older data, or every device excluded by `excludeDeviceImeis`).
    */
   listDiscoveryCounts(orgId: string, limit = 200, excludeDeviceImeis?: string[]): DiscoveryCountPoint[] {
-    const filterReadings = excludeDeviceFilterClause(excludeDeviceImeis, 'r');
+    const filterReadings = excludeDeviceFilterClause(excludeDeviceImeis, 'rd');
     const filterRounds = excludeDeviceFilterClause(excludeDeviceImeis, 'ro');
+    const filterBracketRounds = excludeDeviceFilterClause(excludeDeviceImeis, 'ro2');
     // One correlated subquery over the bracket's rounds, shaped four ways:
     // `pushed` picks the rounds this path is allowed to look at, so "pushed if
     // there are any, scraped otherwise" is a COALESCE of two of them rather
@@ -2004,25 +2015,55 @@ export class Store {
          WHERE d2.org_id = :org AND ro.bracket_at = r.bracket_at
            AND ro.source ${pushed ? '=' : '<>'} 'cbor'
            ${filterRounds.sql})`;
+    // The bracket list is a union of the two tables so that a round with no
+    // readings still gets a row; the count is then a left join back to the
+    // readings, which yields 0 for exactly those brackets. `r` stays the alias
+    // the `roundAgg` subqueries correlate on, so they are unchanged by this.
     const rows = this.db
       .prepare(
-        `SELECT r.bracket_at AS bracket_at, COUNT(DISTINCT r.tag_id) AS count,
+        `WITH r AS (
+           SELECT bracket_at FROM (
+             SELECT rd.bracket_at AS bracket_at
+               FROM readings rd
+               JOIN devices d ON d.imei = rd.device_imei
+              WHERE d.org_id = :org
+                AND EXISTS (SELECT 1 FROM org_tags t WHERE t.org_id = d.org_id AND t.tag_id = rd.tag_id)
+                ${filterReadings.sql}
+             UNION
+             SELECT ro2.bracket_at AS bracket_at
+               FROM rounds ro2
+               JOIN devices d ON d.imei = ro2.device_imei
+              WHERE d.org_id = :org
+                ${filterBracketRounds.sql}
+           )
+           ORDER BY bracket_at DESC
+           LIMIT :limit
+         )
+         SELECT r.bracket_at AS bracket_at,
+                (SELECT COUNT(DISTINCT rd.tag_id)
+                   FROM readings rd
+                   JOIN devices d ON d.imei = rd.device_imei
+                  WHERE d.org_id = :org AND rd.bracket_at = r.bracket_at
+                    AND EXISTS (SELECT 1 FROM org_tags t WHERE t.org_id = d.org_id AND t.tag_id = rd.tag_id)
+                    ${filterReadings.sql}) AS count,
                 COALESCE(
                   ${roundAgg('MAX(ro.duration_seconds)', true)},
                   ${roundAgg('MAX(ro.duration_seconds)', false)}
                 ) AS duration_seconds,
                 ${roundAgg('MIN(ro.received_at)', true)} AS received_at,
                 ${roundAgg('COUNT(*)', true)} AS pushed_rounds
-           FROM readings r
-           JOIN devices d ON d.imei = r.device_imei
-          WHERE d.org_id = :org
-            AND EXISTS (SELECT 1 FROM org_tags t WHERE t.org_id = d.org_id AND t.tag_id = r.tag_id)
-            ${filterReadings.sql}
-          GROUP BY r.bracket_at
-          ORDER BY r.bracket_at DESC
-          LIMIT :limit`,
+           FROM r
+          ORDER BY r.bracket_at DESC`,
       )
-      .all({ org: orgId, limit, ...filterReadings.params, ...filterRounds.params }) as Array<{
+      .all({
+        org: orgId,
+        limit,
+        // All three clauses name the same parameters — the alias differs, the
+        // excluded IMEIs do not — so merging them is a no-op past the first.
+        ...filterReadings.params,
+        ...filterRounds.params,
+        ...filterBracketRounds.params,
+      }) as Array<{
       bracket_at: number;
       count: number;
       duration_seconds: number | null;

@@ -78,8 +78,10 @@ export function DeviceCard({ device, now, onClose }: Props): JSX.Element {
         </dd>
 
         <dt>Carried tag</dt>
+        {/* An em dash is "not known"; "none" is someone having said this
+            reader carries no tag. Same blank column, opposite meanings. */}
         <dd>
-          {device.carriedTagId ?? '—'}
+          {device.carriedTagId ?? (device.carriedTagSource === 'manual' ? 'none' : '—')}
           {device.carriedTagSource === 'auto' && <span className="identity-badge">auto</span>}
         </dd>
 

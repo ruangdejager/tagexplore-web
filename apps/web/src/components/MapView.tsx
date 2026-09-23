@@ -539,12 +539,14 @@ export function MapView({
 
     if (mode === 'global' && linkView && !heatmapView) {
       const byId = new Map(snapshots.map((t) => [t.tagId, t]));
-      // A reader whose position doesn't apply to this round is no use as a
-      // line's anchor: the line would run to somewhere the reader demonstrably
-      // wasn't, and a wrong line is worse than a missing one.
+      // Any reader with a position at all can anchor a line, including one
+      // whose fix doesn't apply to this round and is therefore drawn greyed.
+      // A line from roughly-where-that-reader-is still says the true thing —
+      // these two were in contact — and dropping it hides the contact
+      // entirely, which is the worse error. The greyed marker at the end of it
+      // is what says how much to trust the endpoint.
       const anchorable = devices.filter(
-        (d): d is DeviceRow & { lat: number; lon: number } =>
-          d.lat !== null && d.lon !== null && d.positionSource !== 'stale',
+        (d): d is DeviceRow & { lat: number; lon: number } => d.lat !== null && d.lon !== null,
       );
       const deviceByRadioId = new Map(
         anchorable.filter((d): d is typeof d & { radioId: string } => d.radioId !== null).map((d) => [d.radioId, d]),

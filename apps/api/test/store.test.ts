@@ -331,6 +331,19 @@ describe('devices', () => {
     expect(store.getDevice(DEVICE)).toMatchObject({ carriedTagId: 'AAAA', carriedTagSource: 'auto' });
   });
 
+  it('holds the inference to a reader recorded as carrying no tag', () => {
+    store.applyInferredCarriedTag(DEVICE, 'AAAA');
+    expect(store.getDevice(DEVICE)?.carriedTagId).toBe('AAAA');
+
+    // Not the same as clearing it: the value goes, but the latch stays, so
+    // the next run may not put the guess back.
+    store.setCarriedTag(DEVICE, null, true);
+    expect(store.getDevice(DEVICE)).toMatchObject({ carriedTagId: null, carriedTagSource: 'manual' });
+
+    store.applyInferredCarriedTag(DEVICE, 'AAAA');
+    expect(store.getDevice(DEVICE)).toMatchObject({ carriedTagId: null, carriedTagSource: 'manual' });
+  });
+
   it('finds the position nearest a discovery, not merely the newest before it', () => {
     // Eight minutes early and three minutes late. The later one is closer to
     // the round, which is what "where was it during that discovery" asks.
