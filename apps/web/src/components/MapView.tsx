@@ -67,6 +67,8 @@ interface Props {
   devices: DeviceRow[];
   /** Clicking a reader's own marker selects it the same way clicking a tag does. */
   onSelectDevice: (imei: string) => void;
+  /** The reader picked from the sidebar list (or the map itself) — pans the map to it, same as `selectedTagId` does for a tag. */
+  selectedDeviceImei: string | null;
 
   // --- Movement map ------------------------------------------------------------
   orgId: string | null;
@@ -231,6 +233,7 @@ export function MapView({
   linkReadings,
   devices,
   onSelectDevice,
+  selectedDeviceImei,
   orgId,
   movementSnapshots,
   orgPoints,
@@ -265,6 +268,7 @@ export function MapView({
   const deviceMarkers = useRef<L.LayerGroup | null>(null);
   const movementMarkers = useRef<L.LayerGroup | null>(null);
   const byTag = useRef(new Map<string, L.CircleMarker>());
+  const byDevice = useRef(new Map<string, L.Marker>());
   const fittedKey = useRef<string | null>(null);
   const [baseName, setBaseName] = useState<BaseName>('Satellite');
   const [tilesBlocked, setTilesBlocked] = useState(false);
@@ -676,6 +680,7 @@ export function MapView({
     const group = deviceMarkers.current;
     if (!group) return;
     group.clearLayers();
+    byDevice.current.clear();
     for (const device of devices) {
       if (device.lat === null || device.lon === null) continue;
       const marker = L.marker([device.lat, device.lon], {
@@ -697,8 +702,19 @@ export function MapView({
         onSelectDevice(device.imei);
       });
       marker.addTo(group);
+      byDevice.current.set(device.imei, marker);
     }
   }, [devices, onSelectDevice, finishMeasurement]);
+
+  // Same as picking a tag from the sidebar: a style change only, and a pan to
+  // wherever that reader's marker actually sits.
+  useEffect(() => {
+    const instance = map.current;
+    const marker = selectedDeviceImei ? byDevice.current.get(selectedDeviceImei) : null;
+    if (instance && marker) {
+      instance.setView(marker.getLatLng(), Math.max(instance.getZoom(), 14), { animate: true });
+    }
+  }, [selectedDeviceImei, devices]);
 
   // Geofence boundaries — available in either view, toggled independently of
   // everything else, and never touches pan or zoom: only the attach/detach

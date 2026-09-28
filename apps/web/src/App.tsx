@@ -619,6 +619,7 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
         linkReadings={mapSourceLinks}
         devices={mapSourceDevices}
         onSelectDevice={selectDevice}
+        selectedDeviceImei={selectedDeviceImei}
         geofences={geofences}
         geofencesView={geofencesView}
         colorMode={colorMode}
