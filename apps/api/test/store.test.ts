@@ -554,6 +554,25 @@ describe('listDiscoveryCounts', () => {
 
     expect(store.listDiscoveryCounts(ORG, 2).map((c) => c.bracketAt)).toEqual([T0, T0 - HOUR]);
   });
+
+  it('pages back with `before`, strictly older than it', () => {
+    store.addOrgTags(ORG, ['3E1E']);
+    store.writeReadings(
+      [
+        reading({ bracketAt: T0 - 2 * HOUR, tagId: '3E1E' }),
+        reading({ bracketAt: T0 - HOUR, tagId: '3E1E' }),
+        reading({ bracketAt: T0, tagId: '3E1E' }),
+      ],
+      // A round that heard nothing still pages like any other.
+      [round({ bracketAt: T0 - 3 * HOUR })],
+    );
+
+    expect(store.listDiscoveryCounts(ORG, 2, undefined, T0).map((c) => c.bracketAt)).toEqual([
+      T0 - HOUR,
+      T0 - 2 * HOUR,
+    ]);
+    expect(store.listDiscoveryCounts(ORG, 2, undefined, T0 - 2 * HOUR).map((c) => c.bracketAt)).toEqual([T0 - 3 * HOUR]);
+  });
 });
 
 describe('discoveryDetail', () => {

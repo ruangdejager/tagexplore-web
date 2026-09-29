@@ -203,10 +203,21 @@ export function createApi(deps: ApiDeps): Hono<Env> {
     });
   });
 
-  /** Per-round unique-tag counts, newest first — the count panel's "latest" figure and its history list. */
+  /**
+   * Per-round unique-tag counts, newest first — the count panel's "latest"
+   * figure and its history list. `before` (epoch ms) pages back: only rounds
+   * strictly older than it, so the list can scroll all the way to the first.
+   */
   api.get('/discovery-counts', (c) => {
     const limit = Math.min(1000, Number(c.req.query('limit') ?? 200) || 200);
-    return c.json({ counts: deps.store.listDiscoveryCounts(c.get('orgId'), limit, parseExcludeDeviceImeis(c.req.query())) });
+    const beforeRaw = c.req.query('before');
+    const before = beforeRaw === undefined ? undefined : Number(beforeRaw);
+    if (before !== undefined && !Number.isFinite(before)) {
+      return c.json({ error: '`before` must be epoch milliseconds.' }, 400);
+    }
+    return c.json({
+      counts: deps.store.listDiscoveryCounts(c.get('orgId'), limit, parseExcludeDeviceImeis(c.req.query()), before),
+    });
   });
 
   /**

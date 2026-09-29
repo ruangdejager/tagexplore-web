@@ -147,10 +147,13 @@ export const fetchDiscoveryCounts = (
   orgId: string | null,
   limit = 200,
   excludeDeviceImeis?: string[],
+  /** Only rounds strictly older than this bracket — the next page back. */
+  before?: number,
 ): Promise<{ counts: DiscoveryCountPoint[] }> =>
   request(
     scoped('/api/discovery-counts', orgId, {
       limit,
+      before,
       excludeDevices: excludeDeviceImeis?.length ? excludeDeviceImeis.join(',') : undefined,
     }),
   );

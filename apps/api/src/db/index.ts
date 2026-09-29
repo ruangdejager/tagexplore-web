@@ -2093,8 +2093,17 @@ export class Store {
    *   (discovery is assumed to start exactly on it) the round's last good
    *   block landed. Null when no round row exists for the bracket at all
    *   (older data, or every device excluded by `excludeDeviceImeis`).
+   *
+   * `before` pages the list: only brackets strictly older than it are
+   * returned, so passing the oldest `bracketAt` already shown fetches the next
+   * page back without repeating or skipping a row.
    */
-  listDiscoveryCounts(orgId: string, limit = 200, excludeDeviceImeis?: string[]): DiscoveryCountPoint[] {
+  listDiscoveryCounts(
+    orgId: string,
+    limit = 200,
+    excludeDeviceImeis?: string[],
+    before?: number,
+  ): DiscoveryCountPoint[] {
     const filterReadings = excludeDeviceFilterClause(excludeDeviceImeis, 'rd');
     const filterRounds = excludeDeviceFilterClause(excludeDeviceImeis, 'ro');
     const filterBracketRounds = excludeDeviceFilterClause(excludeDeviceImeis, 'ro2');
@@ -2129,6 +2138,7 @@ export class Store {
               WHERE d.org_id = :org
                 ${filterBracketRounds.sql}
            )
+           WHERE :before IS NULL OR bracket_at < :before
            ORDER BY bracket_at DESC
            LIMIT :limit
          )
@@ -2151,6 +2161,7 @@ export class Store {
       .all({
         org: orgId,
         limit,
+        before: before ?? null,
         // All three clauses name the same parameters — the alias differs, the
         // excluded IMEIs do not — so merging them is a no-op past the first.
         ...filterReadings.params,

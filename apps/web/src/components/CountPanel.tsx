@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { checkedInTagIds, DISCOVERY_WINDOWS, type DiscoveryCountPoint, type DiscoveryWindow, type TagSnapshot } from '@tagexplore/core';
 import * as api from '../api.js';
 
@@ -55,6 +55,11 @@ interface Props {
   streamConnected: boolean;
 }
 
+/** Rows per history fetch; scrolling near the bottom fetches the next page back. */
+const HISTORY_PAGE = 50;
+/** How close to the bottom (px) the scroll has to get before the next page loads. */
+const LOAD_MORE_THRESHOLD = 40;
+
 function timestamp(ms: number): string {
   return new Date(ms).toLocaleString('en-ZA', { timeZone: 'Africa/Johannesburg', hour12: false });
 }
@@ -95,6 +100,13 @@ export function CountPanel({
   const [showHistory, setShowHistory] = useState(false);
   const [history, setHistory] = useState<DiscoveryCountPoint[] | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
+  // False once a page comes back short — the first discovery is on screen.
+  const [historyHasMore, setHistoryHasMore] = useState(true);
+  const [historyLoadingMore, setHistoryLoadingMore] = useState(false);
+  // Bumped whenever the list is replaced outright (org or device filter
+  // changed), so an older page still in flight isn't appended onto rows from
+  // a different query.
+  const historyGeneration = useRef(0);
   // The newest discovery, fetched on its own (the history list only loads
   // once asked for) so the time beside LIVE is the same real time its history
   // row shows — the arrival time for a pushed round — and so it moves on a
@@ -106,13 +118,45 @@ export function CountPanel({
   const toggleHistory = (): void => {
     if (!showHistory && history === null) {
       setHistoryLoading(true);
+      const generation = historyGeneration.current;
       api
-        .fetchDiscoveryCounts(orgId, 200, excludeDeviceImeis)
-        .then((res) => setHistory(res.counts))
+        .fetchDiscoveryCounts(orgId, HISTORY_PAGE, excludeDeviceImeis)
+        .then((res) => {
+          if (generation !== historyGeneration.current) return;
+          setHistory(res.counts);
+          setHistoryHasMore(res.counts.length === HISTORY_PAGE);
+        })
         .catch(() => setHistory([]))
         .finally(() => setHistoryLoading(false));
     }
     setShowHistory((v) => !v);
+  };
+
+  const loadMoreHistory = (): void => {
+    const oldest = history?.[history.length - 1]?.bracketAt;
+    if (oldest === undefined || !historyHasMore || historyLoadingMore) return;
+    const generation = historyGeneration.current;
+    setHistoryLoadingMore(true);
+    api
+      .fetchDiscoveryCounts(orgId, HISTORY_PAGE, excludeDeviceImeis, oldest)
+      .then((res) => {
+        if (generation !== historyGeneration.current) return;
+        // Filtered against the current tail rather than trusted blindly, in
+        // case a live refresh reshaped the list while this page was in flight.
+        setHistory((prev) => {
+          if (!prev) return res.counts;
+          const tail = prev[prev.length - 1]?.bracketAt ?? Infinity;
+          return [...prev, ...res.counts.filter((h) => h.bracketAt < tail)];
+        });
+        setHistoryHasMore(res.counts.length === HISTORY_PAGE);
+      })
+      .catch(() => {})
+      .finally(() => setHistoryLoadingMore(false));
+  };
+
+  const onHistoryScroll = (e: React.UIEvent<HTMLDivElement>): void => {
+    const el = e.currentTarget;
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - LOAD_MORE_THRESHOLD) loadMoreHistory();
   };
 
   // Once loaded, keeps itself in sync instead of going stale until the page is
@@ -133,13 +177,40 @@ export function CountPanel({
     };
   }, [latestDiscoveryAt, liveNonce, orgId, excludeDeviceImeis]);
 
+  // A different org or device filter changes every row's count, so the list
+  // starts over from the newest page rather than patching what's loaded.
+  useEffect(() => {
+    historyGeneration.current += 1;
+    if (history === null) return;
+    const generation = historyGeneration.current;
+    api
+      .fetchDiscoveryCounts(orgId, HISTORY_PAGE, excludeDeviceImeis)
+      .then((res) => {
+        if (generation !== historyGeneration.current) return;
+        setHistory(res.counts);
+        setHistoryHasMore(res.counts.length === HISTORY_PAGE);
+      })
+      .catch(() => {});
+  }, [orgId, excludeDeviceImeis]);
+
+  // A new round only touches the newest rows, so refresh the first page and
+  // keep every older page already scrolled into view.
   useEffect(() => {
     if (history === null) return;
+    const generation = historyGeneration.current;
     api
-      .fetchDiscoveryCounts(orgId, 200, excludeDeviceImeis)
-      .then((res) => setHistory(res.counts))
+      .fetchDiscoveryCounts(orgId, HISTORY_PAGE, excludeDeviceImeis)
+      .then((res) => {
+        if (generation !== historyGeneration.current) return;
+        setHistory((prev) => {
+          const pageOldest = res.counts[res.counts.length - 1]?.bracketAt;
+          if (!prev || pageOldest === undefined || res.counts.length < HISTORY_PAGE) return res.counts;
+          return [...res.counts, ...prev.filter((h) => h.bracketAt < pageOldest)];
+        });
+        if (res.counts.length < HISTORY_PAGE) setHistoryHasMore(false);
+      })
       .catch(() => {});
-  }, [latestDiscoveryAt, liveNonce, orgId, excludeDeviceImeis]);
+  }, [latestDiscoveryAt, liveNonce]);
 
   const isLive = historyAt === null;
 
@@ -198,46 +269,53 @@ export function CountPanel({
       </button>
 
       {showHistory && (
-        <div className="count-history">
+        <div className="count-history" onScroll={onHistoryScroll}>
           {historyLoading ? (
             <div className="empty" style={{ padding: '10px 0' }}>
               Loading…
             </div>
           ) : history && history.length > 0 ? (
-            history.map((h) => (
-              <div key={h.bracketAt} className={`count-history-row${h.bracketAt === historyAt ? ' active' : ''}`}>
-                <button
-                  type="button"
-                  className="count-history-pick"
-                  onClick={() => onSelectHistory(h.bracketAt)}
-                  title={
-                    h.receivedAt !== null
-                      ? `Data arrived ${timestamp(h.receivedAt)} — click to show this round's snapshot on the map`
-                      : `Scraped from the log into the ${timestamp(h.bracketAt)} bracket — click to show this round's snapshot on the map`
-                  }
-                >
-                  {/* The exact arrival time when the unit pushed the round to
-                      us; only a scraped round falls back to its bracket, which
-                      is the only time it has. */}
-                  <span>{timestamp(h.receivedAt ?? h.bracketAt)}</span>
-                  <span className="count-history-duration">
-                    {h.durationSeconds !== null ? formatDuration(h.durationSeconds) : '—'}
-                  </span>
-                  <span className="count-history-count">{h.count}</span>
-                </button>
-                {canSeeRawData && (
+            <>
+              {history.map((h) => (
+                <div key={h.bracketAt} className={`count-history-row${h.bracketAt === historyAt ? ' active' : ''}`}>
                   <button
                     type="button"
-                    className="count-history-info"
-                    onClick={() => onShowRaw(h.bracketAt)}
-                    title="Show this round's raw data"
-                    aria-label={`Raw data for the round at ${timestamp(h.receivedAt ?? h.bracketAt)}`}
+                    className="count-history-pick"
+                    onClick={() => onSelectHistory(h.bracketAt)}
+                    title={
+                      h.receivedAt !== null
+                        ? `Data arrived ${timestamp(h.receivedAt)} — click to show this round's snapshot on the map`
+                        : `Scraped from the log into the ${timestamp(h.bracketAt)} bracket — click to show this round's snapshot on the map`
+                    }
                   >
-                    i
+                    {/* The exact arrival time when the unit pushed the round to
+                        us; only a scraped round falls back to its bracket, which
+                        is the only time it has. */}
+                    <span>{timestamp(h.receivedAt ?? h.bracketAt)}</span>
+                    <span className="count-history-duration">
+                      {h.durationSeconds !== null ? formatDuration(h.durationSeconds) : '—'}
+                    </span>
+                    <span className="count-history-count">{h.count}</span>
                   </button>
-                )}
-              </div>
-            ))
+                  {canSeeRawData && (
+                    <button
+                      type="button"
+                      className="count-history-info"
+                      onClick={() => onShowRaw(h.bracketAt)}
+                      title="Show this round's raw data"
+                      aria-label={`Raw data for the round at ${timestamp(h.receivedAt ?? h.bracketAt)}`}
+                    >
+                      i
+                    </button>
+                  )}
+                </div>
+              ))}
+              {historyLoadingMore && (
+                <div className="empty" style={{ padding: '6px 0' }}>
+                  Loading more…
+                </div>
+              )}
+            </>
           ) : (
             <div className="empty" style={{ padding: '10px 0' }}>
               No discovery history yet.
