@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { Config } from '../config.js';
 import type { Store } from '../db/index.js';
 import type { LiveBus } from '../events/bus.js';
+import { forwardTagsTelemetry } from '../ingest/farmrangerClient.js';
 import type { Scheduler } from '../ingest/scheduler.js';
 import { decodeTagDiscovery, storeTagDiscovery } from '../ingest/tagDiscovery.js';
 
@@ -64,6 +65,21 @@ export function createTagDiscoveryApi(deps: TagDiscoveryApiDeps): Hono {
     if (!IMEI_RE.test(imei)) {
       console.warn(`[tagdiscovery] rejected: path IMEI is not 15 digits (imei=${imei}, bytes=${body.length})`);
       return c.json({ ok: false, error: 'IMEI must be 15 decimal digits.' }, 200);
+    }
+
+    // Relay the body, as received, to the Farmranger tags-telemetry API. Done
+    // before decoding and regardless of what we make of it — that API parses
+    // the campaign itself, and would have had these exact bytes from the unit.
+    // Fire-and-forget for the same reason as the position read below: the
+    // unit's 200 must not wait on an upstream.
+    if (deps.config.tagsTelemetryApiBase) {
+      void forwardTagsTelemetry(deps.config, imei, body).then(
+        () => console.info(`[tagdiscovery] imei=${imei} forwarded to tags-telemetry (bytes=${body.length})`),
+        (err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          console.warn(`[tagdiscovery] imei=${imei} tags-telemetry forward failed: ${message}`);
+        },
+      );
     }
 
     const decoded = decodeTagDiscovery(body);

@@ -646,10 +646,46 @@ describe('POST /:imei/tagdiscovery', () => {
     vi.spyOn(console, 'info').mockImplementation(() => undefined);
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     vi.setSystemTime(NOW_MS);
+    // Every POST relays its body to the tags-telemetry API; keep it off the network.
+    fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 200 }));
   });
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  let fetchMock: ReturnType<typeof vi.spyOn<typeof globalThis, 'fetch'>>;
+
+  it('relays the raw body, unchanged, to the tags-telemetry API', async () => {
+    const body = bytes(ADVANCED_TWO_RECORDS);
+    await post(IMEI, body);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe(`https://api.services.farmrangersa.com/v2/units/${IMEI}/tags-telemetry`);
+    expect(init).toMatchObject({ method: 'POST', headers: { 'content-type': 'application/octet-stream' } });
+    expect(Buffer.from(init!.body as Uint8Array).toString('hex').toUpperCase()).toBe(ADVANCED_TWO_RECORDS);
+  });
+
+  it('relays even an undecodable body, but not one with a malformed IMEI', async () => {
+    await post(IMEI, bytes('DEADBEEF'));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await post('not-an-imei', bytes(EMPTY_CAMPAIGN));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('still answers 200 when the relay fails', async () => {
+    fetchMock.mockRejectedValue(new Error('upstream down'));
+    const res = await post(IMEI, bytes(ADVANCED_TWO_RECORDS));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, outcome: 'stored' });
+  });
+
+  it('does not relay when the tags-telemetry base is blank', async () => {
+    config = { ...config, tagsTelemetryApiBase: '' };
+    await post(IMEI, bytes(ADVANCED_TWO_RECORDS));
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('answers 200 and stores the campaign', async () => {

@@ -207,3 +207,29 @@ export function readSchedule(payload: unknown): DeviceSchedule | null {
 
   return { reportStartMinute, reportIntervalMinutes, reportCountPerDay: Math.round(count) };
 }
+
+/**
+ * Where a pushed tag-discovery campaign is relayed on to — the Farmranger
+ * services API, keyed by the unit's IMEI the same way the unit's own posts are.
+ */
+export function buildTagsTelemetryUrl(config: Config, imei: string): string {
+  return `${config.tagsTelemetryApiBase}${imei}/tags-telemetry`;
+}
+
+/**
+ * Relays a campaign's body to the Farmranger API untouched — the same bytes and
+ * the same `Content-Type` the unit itself sends, and, like the unit, no auth
+ * header. Bounded by a timeout so a hung upstream can never pile up requests.
+ */
+export async function forwardTagsTelemetry(config: Config, imei: string, body: Uint8Array): Promise<void> {
+  const res = await fetch(buildTagsTelemetryUrl(config, imei), {
+    method: 'POST',
+    headers: { 'content-type': 'application/octet-stream' },
+    body,
+    signal: AbortSignal.timeout(config.tagsTelemetryTimeoutMs),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Tags-telemetry API returned HTTP ${res.status} for ${imei}: ${text.slice(0, 200)}`);
+  }
+}

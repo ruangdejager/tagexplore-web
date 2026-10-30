@@ -126,6 +126,15 @@ export interface Config {
    */
   tagDiscoveryDebug: boolean;
   /**
+   * Farmranger tags-telemetry API, ending in a slash — every pushed campaign's
+   * raw body is relayed on, unchanged, to `<base><imei>/tags-telemetry`. The
+   * hardware posts here, so this is what keeps that API fed while the units
+   * point at us instead. Blank disables the relay.
+   */
+  tagsTelemetryApiBase: string;
+  /** Upper bound on one relay POST, so a hung upstream can't pile requests up. */
+  tagsTelemetryTimeoutMs: number;
+  /**
    * The account that is force-promoted to admin on every boot — and, if it
    * doesn't exist yet (a fresh database, e.g. a new Railway deploy), created
    * with this password. Once the account exists, its password is never
@@ -182,6 +191,10 @@ export function loadConfig(): Config {
     carriedTagMinMargin: num(process.env['CARRIED_TAG_MIN_MARGIN'], 0.15),
 
     tagDiscoveryDebug: bool(process.env['TAG_DISCOVERY_DEBUG'], true),
+    tagsTelemetryApiBase: (
+      process.env['TAGS_TELEMETRY_API_BASE'] ?? 'https://api.services.farmrangersa.com/v2/units/'
+    ).replace(/\/?$/, '/').replace(/^\/$/, ''),
+    tagsTelemetryTimeoutMs: num(process.env['TAGS_TELEMETRY_TIMEOUT_MS'], 15_000),
     foundingAdminUsername: process.env['FOUNDING_ADMIN_USERNAME'] ?? 'ruandj',
     foundingAdminPassword: process.env['FOUNDING_ADMIN_PASSWORD'] ?? 'Rdj@5046',
   };
