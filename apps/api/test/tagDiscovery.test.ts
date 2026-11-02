@@ -255,6 +255,35 @@ describe('decodeTagDiscovery', () => {
     const result = decodeTagDiscovery(buildAdvanced([], 0));
     expect(result.ok && result.campaign.durationSeconds).toBeNull();
   });
+
+  it('reads key 7 (imei) when the firmware sends it', () => {
+    const body = buildAdvanced([], 47, Number(IMEI));
+    // 0x1B + the IMEI as 8 big-endian bytes — what nanocbor writes for it.
+    expect(Buffer.from(body.slice(-10)).toString('hex').toUpperCase()).toBe('071B000313AAC3739E8B');
+    const result = decodeTagDiscovery(body);
+    expect(result.ok && result.campaign.imei).toBe(IMEI);
+  });
+
+  it('pads key 7 back to 15 digits, as the path carries it', () => {
+    const result = decodeTagDiscovery(buildAdvanced([], 47, 12_345_678_901_234));
+    expect(result.ok && result.campaign.imei).toBe('012345678901234');
+  });
+
+  it('treats a missing key 7 as null, not an error — older firmware omits it', () => {
+    const fixture = decodeTagDiscovery(bytes(ADVANCED_TWO_RECORDS));
+    expect(fixture.ok && fixture.campaign.imei).toBeNull();
+  });
+
+  it('drops a malformed key 7 rather than failing the body', () => {
+    // The path IMEI is what the campaign is stored against, so a bad copy of it
+    // in the body is not worth losing the campaign over.
+    // Text instead of an integer, 0, more than 15 digits, and past 2^53.
+    for (const bad of [IMEI, 0, 1_000_000_000_000_000, Number.MAX_SAFE_INTEGER + 1]) {
+      const result = decodeTagDiscovery(buildAdvanced([], 47, bad));
+      expect(result.ok).toBe(true);
+      expect(result.ok && result.campaign.imei).toBeNull();
+    }
+  });
 });
 
 describe('formatPrimaryVersion', () => {
@@ -694,6 +723,14 @@ describe('POST /:imei/tagdiscovery', () => {
     expect(await res.json()).toMatchObject({ ok: true, outcome: 'stored', records: 2, readingsWritten: 2 });
   });
 
+  it('echoes the body IMEI and stores against the path even when they differ', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const res = await post(IMEI, buildAdvanced([], 47, Number(UNKNOWN_IMEI)));
+    expect(await res.json()).toMatchObject({ ok: true, outcome: 'stored', bodyImei: UNKNOWN_IMEI });
+    expect(store.listTagDiscoveryPosts(IMEI)).toHaveLength(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`imei=${UNKNOWN_IMEI}`));
+  });
+
   it('answers 200 for an empty campaign', async () => {
     const res = await post(IMEI, bytes(EMPTY_CAMPAIGN));
     expect(res.status).toBe(200);
@@ -740,6 +777,7 @@ describe('POST /:imei/tagdiscovery', () => {
 
 const UINT = 0 << 5;
 const NEG = 1 << 5;
+const TSTR = 3 << 5;
 const ARR = 4 << 5;
 const MAP = 5 << 5;
 
@@ -747,17 +785,26 @@ function head(major: number, arg: number): number[] {
   if (arg < 24) return [major | arg];
   if (arg <= 0xff) return [major | 24, arg];
   if (arg <= 0xffff) return [major | 25, (arg >> 8) & 0xff, arg & 0xff];
-  return [major | 26, (arg >>> 24) & 0xff, (arg >>> 16) & 0xff, (arg >>> 8) & 0xff, arg & 0xff];
+  if (arg <= 0xffffffff) return [major | 26, (arg >>> 24) & 0xff, (arg >>> 16) & 0xff, (arg >>> 8) & 0xff, arg & 0xff];
+  return [major | 27, ...Buffer.from(BigInt(arg).toString(16).padStart(16, '0'), 'hex')];
 }
 
 function int(value: number): number[] {
   return value >= 0 ? head(UINT, value) : head(NEG, -(value + 1));
 }
 
-/** `durationS` omitted (the default) matches firmware that predates key 6. */
-function buildAdvanced(records: number[][], durationS?: number): Uint8Array {
+function tstr(value: string): number[] {
+  const utf8 = [...Buffer.from(value, 'utf8')];
+  return [...head(TSTR, utf8.length), ...utf8];
+}
+
+/**
+ * `durationS` and `imei` omitted (the default) match firmware that predates
+ * keys 6 and 7. `imei` is written as given, so a test can send a bad one.
+ */
+function buildAdvanced(records: number[][], durationS?: number, imei?: unknown): Uint8Array {
   const out: number[] = [
-    ...head(MAP, durationS === undefined ? 5 : 6),
+    ...head(MAP, 5 + (durationS === undefined ? 0 : 1) + (imei === undefined ? 0 : 1)),
     ...int(1),
     ...int(PRIMARY_DEVICE_ID),
     ...int(2),
@@ -774,5 +821,7 @@ function buildAdvanced(records: number[][], durationS?: number): Uint8Array {
     for (const value of record) out.push(...int(value));
   }
   if (durationS !== undefined) out.push(...int(6), ...int(durationS));
+  if (typeof imei === 'number') out.push(...int(7), ...int(imei));
+  else if (typeof imei === 'string') out.push(...int(7), ...tstr(imei));
   return new Uint8Array(out);
 }

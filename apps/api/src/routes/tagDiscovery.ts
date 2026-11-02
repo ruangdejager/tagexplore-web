@@ -89,6 +89,11 @@ export function createTagDiscoveryApi(deps: TagDiscoveryApiDeps): Hono {
     }
 
     const campaign = decoded.campaign;
+    // The path stays the authority; a body naming another unit is only flagged.
+    if (campaign.imei !== null && campaign.imei !== imei) {
+      console.warn(`[tagdiscovery] imei=${imei} body reports a different imei=${campaign.imei}; storing against the path`);
+    }
+
     let result;
     try {
       result = storeTagDiscovery(deps.store, deps.config, imei, campaign, receivedAt, body.length, deps.bus);
@@ -124,6 +129,7 @@ export function createTagDiscoveryApi(deps: TagDiscoveryApiDeps): Hono {
       {
         ok: result.outcome === 'stored' || result.outcome === 'duplicate',
         outcome: result.outcome,
+        bodyImei: campaign.imei,
         primaryTagId: campaign.primaryTagId,
         sessionUtc: campaign.sessionUtc,
         mode: campaign.mode,

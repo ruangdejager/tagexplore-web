@@ -29,17 +29,23 @@
  *   6: durationS        uint    seconds, the unit's own measurement of how long
  *                               the discovery campaign took; 0 = not measured
  *                               (always 0 on a basic-mode campaign — see below)
+ *   7: imei             uint64  the unit's own modem IMEI as a number — the same
+ *                               value as the 15-digit IMEI in the request path
  *
  * Every value is an unsigned integer, a negative integer, an array or the map
  * itself: no tags, no floats, no text strings, no indefinite lengths. The
  * firmware always picks the narrowest encoding for each value, so a field
- * arrives 1, 2, 3 or 5 bytes wide depending on its magnitude — which is why
- * this decodes with a real CBOR library rather than fixed offsets.
+ * arrives 1, 2, 3, 5 or 9 bytes wide depending on its magnitude — which is why
+ * this decodes with a real CBOR library rather than fixed offsets. A real IMEI
+ * is always past 2^32, so key 7 is always the 9-byte form (0x1B, then the
+ * value as 8 big-endian bytes).
  *
- * Key 6 (durationS) postdates keys 1-5: a unit on older firmware simply omits
- * it, and that is treated as "not measured" rather than an error — the same
- * way an old primary reports `primaryVersion: 0`. Any future key is meant to
- * be additive like this one; an unrecognised key is ignored, never rejected.
+ * Keys 6 (durationS) and 7 (imei) postdate keys 1-5: a unit on older firmware
+ * simply omits them. A missing duration is treated as "not measured" rather
+ * than an error — the same way an old primary reports `primaryVersion: 0` —
+ * and a missing or malformed IMEI as "not reported", since the path already
+ * carries it. Any future key is meant to be additive like these; an
+ * unrecognised key is ignored, never rejected.
  */
 
 import { decode } from 'cbor2';
@@ -71,6 +77,8 @@ const MAX_BASIC_RECORDS = 32;
 const MIN_SESSION_UTC = Math.floor(Date.parse('2020-01-01T00:00:00Z') / 1000);
 const MAX_SESSION_SKEW_SECONDS = 86_400;
 
+const MAX_IMEI = 999_999_999_999_999;
+
 export interface TagDiscoveryCampaign {
   primaryDeviceId: number;
   /** `primaryDeviceId` in the same hex form tag ids are stored as. */
@@ -89,6 +97,14 @@ export interface TagDiscoveryCampaign {
    * the actual on-air campaign time, reported directly instead of inferred.
    */
   durationSeconds: number | null;
+  /**
+   * The unit's IMEI as it reports it inside the body, as the same 15-digit
+   * string the path carries. `null` when absent (older firmware) or not an
+   * integer of at most 15 digits. Not what the campaign is stored
+   * against — the request path stays the authority for that — but a mismatch
+   * between the two is worth logging.
+   */
+  imei: string | null;
   tags: TagReading[];
   /** Records that decoded but could not be mapped (unusable id, wrong item count). */
   skippedRecords: number;
@@ -230,6 +246,12 @@ export function decodeTagDiscovery(body: Uint8Array): DecodeResult {
   // own "not measured" value, same convention as primaryVersion.
   const rawDurationSeconds = readInt(decoded, 6);
   const durationSeconds = rawDurationSeconds !== null && rawDurationSeconds > 0 ? rawDurationSeconds : null;
+  // Optional too. A malformed one is dropped rather than failing the body: the
+  // path IMEI is what the campaign is stored against either way.
+  // A 15-digit IMEI fits in 2^53, so the decoder hands it over as a plain number;
+  // a bigint here can only be out of range.
+  const rawImei = readInt(decoded, 7);
+  const imei = rawImei !== null && rawImei > 0 && rawImei <= MAX_IMEI ? String(rawImei).padStart(15, '0') : null;
 
   if (primaryDeviceId === null) return { ok: false, error: 'Key 1 (primaryDeviceId) missing or not an integer.' };
   if (primaryVersion === null) return { ok: false, error: 'Key 2 (primaryVersion) missing or not an integer.' };
@@ -277,6 +299,7 @@ export function decodeTagDiscovery(body: Uint8Array): DecodeResult {
       sessionUtc,
       mode,
       durationSeconds,
+      imei,
       tags,
       skippedRecords,
     },
