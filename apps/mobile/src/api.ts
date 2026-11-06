@@ -2,6 +2,7 @@ import type {
   AuthUser,
   DeviceRow,
   DiscoveryCountPoint,
+  DiscoveryDetail,
   GeofenceRegion,
   GpsPoint,
   LinkReading,
@@ -63,6 +64,9 @@ export const fetchPositions = (orgId: string, hours: number): Promise<{ points: 
 /** Each tag's latest reading as of one past round — what the map shows while browsing count history. */
 export const fetchSnapshotsAt = (orgId: string, at: number): Promise<{ snapshots: TagSnapshot[]; links: LinkReading[] }> =>
   request(`/api/snapshots?${q(orgId, { to: at, from: Math.max(0, at - 364 * 86_400_000) })}`);
+/** Everything stored behind one round. The server only answers `dev` and `admin` accounts. */
+export const fetchDiscoveryDetail = (orgId: string, at: number): Promise<DiscoveryDetail> =>
+  request(`/api/discovery-detail?${q(orgId, { at })}`);
 /** Per-round unique-tag counts, newest first; `before` pages further back. */
 export const fetchDiscoveryCounts = (orgId: string, limit: number, before?: number): Promise<{ counts: DiscoveryCountPoint[] }> =>
   request(`/api/discovery-counts?${q(orgId, before === undefined ? { limit } : { limit, before })}`);

@@ -4,6 +4,7 @@ import * as api from './api.js';
 import { AlertsView } from './components/AlertsView.js';
 import { InstallBanner } from './components/InstallBanner.js';
 import { LoadingScreen } from './components/LoadingScreen.js';
+import { RawDiscoverySheet } from './components/RawDiscoverySheet.js';
 import { LoginScreen } from './components/LoginScreen.js';
 import { MapTab } from './components/MapTab.js';
 import { OrgPicker } from './components/OrgPicker.js';
@@ -50,6 +51,7 @@ export function App(): JSX.Element {
   const setOpenTag = useCallback((tagId: string | null) => setOpenTagState(tagId ? { tagId } : null), []);
   const [mapFocus, setMapFocus] = useState<{ tagId: string; n: number } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [rawAt, setRawAt] = useState<number | null>(null);
   // Off until switched on in settings.
   const [showFunctions, setShowFunctions] = usePref('tx-m-show-functions', false);
   const [showGeofences, setShowGeofences] = usePref('tx-m-show-geofences', false);
@@ -153,6 +155,10 @@ export function App(): JSX.Element {
   // ends the wait too, so it can never get stuck in front of the message.
   const loadingData = !!user && (!orgsLoaded || (orgId !== null && data.loadedOrgId !== orgId && !data.error));
   const loadingOrgName = orgs.find((o) => o.id === orgId)?.name;
+  // Raw round data and the map functions are for `dev` and `admin` accounts.
+  // The server enforces the raw data rule too; this keeps the controls off a
+  // client's screen.
+  const isStaff = user?.role === 'admin' || user?.role === 'dev';
 
   if (!authChecked) return <LoadingScreen active />;
   if (!user) return <LoginScreen onLoggedIn={setUser} />;
@@ -184,8 +190,9 @@ export function App(): JSX.Element {
               visible={tab === 'map'}
               focus={mapFocus}
               onOpenTag={(tagId, snap) => setOpenTagState({ tagId, ...(snap ? { snap } : {}), fromMap: true })}
-              showFunctions={showFunctions}
+              showFunctions={isStaff && showFunctions}
               showGeofences={showGeofences}
+              onShowRaw={isStaff ? setRawAt : undefined}
             />
           </div>
         )}
@@ -228,12 +235,14 @@ export function App(): JSX.Element {
           orgId={orgId}
           showFunctions={showFunctions}
           onShowFunctionsChange={setShowFunctions}
+          canUseFunctions={isStaff}
           showGeofences={showGeofences}
           onShowGeofencesChange={setShowGeofences}
           onClose={() => setSettingsOpen(false)}
           onLogout={logout}
         />
       )}
+      {rawAt !== null && orgId && <RawDiscoverySheet orgId={orgId} bracketAt={rawAt} onClose={() => setRawAt(null)} />}
       <LoadingScreen active={loadingData} label={loadingOrgName ? `Loading ${loadingOrgName}…` : undefined} />
     </div>
   );

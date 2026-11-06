@@ -238,7 +238,9 @@ at `/m/`. It uses the same login and endpoints as the desktop app, plus
 moves the other. It has three tabs:
 
 - **Map** (the default): tag dots without labels, and the count block with its
-  count history. Tapping a history row shows that round on the map. Tapping a
+  count history. Tapping a history row shows that round on the map. For `dev`
+  and `admin` accounts each row also has an ⓘ that opens the round's raw data,
+  as on the desktop. Tapping a
   dot opens the same card as the desktop.
 - **Tags**: every tag, with the same org-wide on/off switch as the desktop list.
 - **Alerts**: the tags in alert.
@@ -249,7 +251,7 @@ signing out are behind the person icon. Every sheet (tag card, settings) closes
 by pulling it down.
 
 Settings › Geofences draws the organisation's boundaries on the map.
-Settings › Map functions adds a second block under the count block, with link
+For `dev` and `admin` accounts only, Settings › Map functions adds a second block under the count block, with link
 view (which also shows the readers) or a heatmap of the last 7 days of GPS
 fixes. Only one of those two can be on at a time. Both blocks shrink to
 a pill with their ✕ and open again with a tap. These choices are remembered on

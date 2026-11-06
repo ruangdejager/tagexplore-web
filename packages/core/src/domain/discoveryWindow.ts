@@ -6,7 +6,7 @@
 export type DiscoveryWindow = 'latest' | '2' | '4' | '6' | '8' | '12' | '16' | '24';
 
 export const DISCOVERY_WINDOWS: Array<{ value: DiscoveryWindow; label: string }> = [
-  { value: 'latest', label: 'Latest discovery' },
+  { value: 'latest', label: 'Latest' },
   { value: '2', label: 'Last 2h' },
   { value: '4', label: 'Last 4h' },
   { value: '6', label: 'Last 6h' },

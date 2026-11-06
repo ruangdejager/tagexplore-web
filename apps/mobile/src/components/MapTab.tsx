@@ -31,8 +31,8 @@ function deviceIcon(source: DeviceRow['positionSource']): L.DivIcon {
   return L.divIcon({
     className: `device-marker-wrap${variant}`,
     html: '<span class="device-marker-ping"></span><span class="device-marker-dot"></span>',
-    iconSize: [26, 26],
-    iconAnchor: [13, 13],
+    iconSize: [20, 20],
+    iconAnchor: [10, 10],
   });
 }
 
@@ -59,6 +59,8 @@ export function MapTab(props: {
   showFunctions: boolean;
   /** The organisation's geofences, switched on in Settings. Independent of Map functions. */
   showGeofences: boolean;
+  /** Only for `dev` and `admin` accounts: opens a history round's raw data. */
+  onShowRaw?: ((bracketAt: number) => void) | undefined;
 }): JSX.Element {
   const { orgId, data, visible, focus } = props;
   const el = useRef<HTMLDivElement | null>(null);
@@ -207,9 +209,9 @@ export function MapTab(props: {
       points.push([snap.lat, snap.lon]);
       const isAlert = historyAt === null && alerting.has(snap.tagId);
       L.circleMarker([snap.lat, snap.lon], {
-        radius: isAlert ? 9 : 7,
+        radius: isAlert ? 7 : 5.5,
         color: '#12140f',
-        weight: 2,
+        weight: 1.5,
         fillColor: isAlert ? COLOR.alert : checkedIn.has(snap.tagId) ? COLOR.checkedIn : COLOR.notCheckedIn,
         fillOpacity: 0.95,
       })
@@ -239,7 +241,7 @@ export function MapTab(props: {
 
     pulse.current?.remove();
     pulse.current = L.marker([snap.lat, snap.lon], {
-      icon: L.divIcon({ className: 'focus-pulse', iconSize: [44, 44] }),
+      icon: L.divIcon({ className: 'focus-pulse', iconSize: [36, 36] }),
       interactive: false,
       keyboard: false,
     }).addTo(m);
@@ -401,6 +403,7 @@ export function MapTab(props: {
         historyAt={historyAt}
         onSelectHistory={setHistoryAt}
         onGoLive={() => setHistoryAt(null)}
+        onShowRaw={props.onShowRaw}
         dataVersion={data.updatedAt}
         streamConnected={data.live}
       />

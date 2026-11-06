@@ -47,6 +47,7 @@ export function Sheet({ children, onClose, label }: { children: ReactNode; onClo
   useEffect(() => {
     const el = sheet.current;
     if (!el) return;
+    let startX = 0;
     let startY = 0;
     let lastY = 0;
     let lastT = 0;
@@ -63,6 +64,7 @@ export function Sheet({ children, onClose, label }: { children: ReactNode; onClo
       if (e.touches.length !== 1 || closing.current) return;
       tracking = el.scrollTop <= 0;
       dragging = false;
+      startX = e.touches[0]!.clientX;
       startY = lastY = e.touches[0]!.clientY;
       lastT = e.timeStamp;
       velocity = 0;
@@ -73,6 +75,11 @@ export function Sheet({ children, onClose, label }: { children: ReactNode; onClo
       const y = e.touches[0]!.clientY;
       const dy = y - startY;
       if (!dragging) {
+        // Mostly sideways: a horizontal scroll (the raw readings table), not a pull.
+        if (Math.abs(e.touches[0]!.clientX - startX) > Math.abs(dy)) {
+          tracking = false;
+          return;
+        }
         // Pulling up, or the content has been scrolled: leave it to scrolling.
         if (dy < 0 || el.scrollTop > 0) {
           tracking = false;

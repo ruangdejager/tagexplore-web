@@ -56,6 +56,12 @@ export function CountBlock(props: {
   historyAt: number | null;
   onSelectHistory: (bracketAt: number) => void;
   onGoLive: () => void;
+  /**
+   * Opens a round's raw data. Only passed for `dev` and `admin` accounts; the
+   * icon isn't drawn without it. The sheet itself lives in App, because this
+   * block's backdrop blur would trap a full-screen overlay inside it.
+   */
+  onShowRaw?: ((bracketAt: number) => void) | undefined;
   /** Changes whenever new data has been loaded, so the latest round and the first page refresh. */
   dataVersion: number | null;
   streamConnected: boolean;
@@ -211,16 +217,25 @@ export function CountBlock(props: {
           ) : (
             <>
               {history.map((h) => (
-                <button
-                  key={h.bracketAt}
-                  type="button"
-                  className={`count-history-row ${h.bracketAt === props.historyAt ? 'active' : ''}`}
-                  onClick={() => props.onSelectHistory(h.bracketAt)}
-                >
-                  <span>{timestamp(h.receivedAt ?? h.bracketAt)}</span>
-                  <span className="count-history-duration">{h.durationSeconds !== null ? formatDuration(h.durationSeconds) : '—'}</span>
-                  <span className="count-history-count">{h.count}</span>
-                </button>
+                <div key={h.bracketAt} className={`count-history-line ${h.bracketAt === props.historyAt ? 'active' : ''}`}>
+                  <button type="button" className="count-history-row" onClick={() => props.onSelectHistory(h.bracketAt)}>
+                    <span>{timestamp(h.receivedAt ?? h.bracketAt)}</span>
+                    <span className="count-history-duration">
+                      {h.durationSeconds !== null ? formatDuration(h.durationSeconds) : '—'}
+                    </span>
+                    <span className="count-history-count">{h.count}</span>
+                  </button>
+                  {props.onShowRaw && (
+                    <button
+                      type="button"
+                      className="count-history-info"
+                      onClick={() => props.onShowRaw!(h.bracketAt)}
+                      aria-label={`Raw data for the round at ${timestamp(h.receivedAt ?? h.bracketAt)}`}
+                    >
+                      i
+                    </button>
+                  )}
+                </div>
               ))}
               {loadingMore && <div className="count-history-note">Loading more…</div>}
             </>

@@ -10,6 +10,8 @@ export function SettingsSheet(props: {
   orgId: string | null;
   showFunctions: boolean;
   onShowFunctionsChange: (v: boolean) => void;
+  /** Map functions are for `dev` and `admin` accounts; nobody else sees the switch. */
+  canUseFunctions: boolean;
   showGeofences: boolean;
   onShowGeofencesChange: (v: boolean) => void;
   onClose: () => void;
@@ -32,21 +34,23 @@ export function SettingsSheet(props: {
           checked={props.showGeofences}
           onChange={props.onShowGeofencesChange}
         />
-        <button
-          type="button"
-          role="switch"
-          aria-checked={props.showFunctions}
-          className="setting-toggle"
-          onClick={() => props.onShowFunctionsChange(!props.showFunctions)}
-        >
-          <span className="fn-text">
-            <span>Map functions</span>
-            <small>Link view or a 7-day heatmap, under the count on the map</small>
-          </span>
-          <span className="switch-track" data-on={props.showFunctions ? '1' : '0'}>
-            <span />
-          </span>
-        </button>
+        {props.canUseFunctions && (
+          <button
+            type="button"
+            role="switch"
+            aria-checked={props.showFunctions}
+            className="setting-toggle"
+            onClick={() => props.onShowFunctionsChange(!props.showFunctions)}
+          >
+            <span className="fn-text">
+              <span>Map functions</span>
+              <small>Link view or a 7-day heatmap, under the count on the map</small>
+            </span>
+            <span className="switch-track" data-on={props.showFunctions ? '1' : '0'}>
+              <span />
+            </span>
+          </button>
+        )}
       </section>
 
       <NotificationSettings orgId={props.orgId} orgs={props.orgs} />
