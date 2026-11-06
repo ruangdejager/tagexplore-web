@@ -1,5 +1,5 @@
 /*
- * TagExplore phone app service worker. Scope: /m/ only, so it never touches
+ * Farmranger Tags phone app service worker. Scope: /m/ only, so it never touches
  * the desktop app at /.
  *
  * Its jobs:
@@ -57,10 +57,10 @@ self.addEventListener('push', (event) => {
   try {
     data = event.data ? event.data.json() : {};
   } catch {
-    data = { title: 'TagExplore', body: event.data ? event.data.text() : '' };
+    data = { title: 'Farmranger Tags', body: event.data ? event.data.text() : '' };
   }
 
-  const title = data.title || 'TagExplore';
+  const title = data.title || 'Farmranger Tags';
   const options = {
     body: data.body || '',
     tag: data.tag || undefined,

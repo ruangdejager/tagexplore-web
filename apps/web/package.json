@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "React front end for TagExplore: satellite tag map, battery trends, administration.",
+  "description": "React front end for Farmranger Tags: satellite tag map, battery trends, administration.",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Installable phone app for TagExplore: alerts, tag list and map, with push notifications. Served at /m by the API.",
+  "description": "Installable phone app for Farmranger Tags: alerts, tag list and map, with push notifications. Served at /m by the API.",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

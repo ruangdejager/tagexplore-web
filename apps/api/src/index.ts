@@ -115,7 +115,7 @@ if (hasWebBuild) {
 } else {
   app.get('/', (c) =>
     c.text(
-      'TagExplore API is running.\n\n' +
+      'Farmranger Tags API is running.\n\n' +
         'No web build found — run `npm run dev` and open http://localhost:5173,\n' +
         'or `npm run build` to produce one this server can host.\n',
     ),
@@ -135,7 +135,7 @@ const pruneTimer = setInterval(() => {
 pruneTimer.unref();
 
 const server = serve({ fetch: app.fetch, port: config.port }, (info) => {
-  console.log(`TagExplore API listening on http://localhost:${info.port}`);
+  console.log(`Farmranger Tags API listening on http://localhost:${info.port}`);
   console.log(`  data:      ${config.dataDir}`);
   console.log(`  web build: ${hasWebBuild ? webRoot : '(none — use the Vite dev server)'}`);
   console.log(`  mobile build: ${hasMobileBuild ? `${mobileRoot} (at /m/)` : '(none — use the mobile Vite dev server)'}`);

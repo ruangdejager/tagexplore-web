@@ -1,4 +1,4 @@
-# TagExplore
+# Farmranger Tags
 
 A map-first web app for Farmranger tag discovery. It reads each reader device's
 raw syslog from the Farmranger API on that device's own schedule, parses the tag
@@ -255,7 +255,7 @@ a pill with their ✕ and open again with a tap. These choices are remembered on
 the phone only.
 
 **Installing on an iPhone.** Open `https://<your-domain>/m/` in Safari, tap
-Share › Add to Home Screen, then open TagExplore from the new icon. It runs full
+Share › Add to Home Screen, then open Farmranger Tags from the new icon. It runs full
 screen with no browser bars. An installed app keeps its own cookies, separate
 from Safari, so sign in once inside it. Android Chrome offers to install the
 app itself.

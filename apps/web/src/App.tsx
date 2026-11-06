@@ -481,7 +481,8 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
     <div id="app">
       <header>
         <button className="mark" onClick={() => setFitNonce((n) => n + 1)} title="Fit the map to every tag shown">
-          Tag<span>·</span>Explore
+          <img className="mark-logo" src="/farmranger-logo.svg" alt="" width="28" height="28" />
+          Farmranger<span>·</span>Tags
         </button>
 
         <div className="tally">

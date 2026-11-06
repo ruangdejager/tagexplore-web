@@ -32,7 +32,8 @@ export function LoginScreen({ auth }: Props): JSX.Element {
     <div className="login-screen">
       <div className="login-card">
         <div className="mark" style={{ marginBottom: 18 }}>
-          Tag<span>·</span>Explore
+          <img className="mark-logo" src="/farmranger-logo.svg" alt="" width="28" height="28" />
+          Farmranger<span>·</span>Tags
         </div>
 
         <div className="modal-tabs">

@@ -26,7 +26,7 @@ export function OrgPicker(props: {
 
   return (
     <div className="brand" ref={ref}>
-      <img className="brand-logo" src="/m/farmranger-logo.svg" alt="Farmranger" width="34" height="34" />
+      <img className="brand-logo" src="/m/farmranger-logo.svg" alt="Farmranger Tags" width="34" height="34" />
       <button
         type="button"
         className="org-picker"

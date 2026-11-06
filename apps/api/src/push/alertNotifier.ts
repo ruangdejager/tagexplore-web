@@ -147,7 +147,7 @@ export function createAlertNotifier(deps: {
     // later from the push service, which holds it for the TTL.
     for (const a of toNotify) store.markAlertNotified(orgId, a.tagId, a.kind, nowMs);
 
-    const orgName = store.getOrg(orgId)?.name ?? 'TagExplore';
+    const orgName = store.getOrg(orgId)?.name ?? 'Farmranger Tags';
     const name = (a: TagAlert): string => (a.label ? `${a.tagId} ${a.label}` : a.tagId);
     const payload =
       toNotify.length === 1
@@ -233,7 +233,7 @@ export function createAlertNotifier(deps: {
     checkOrg,
 
     async sendTest(sub: PushSubscriptionRow): Promise<{ ok: boolean; status: number }> {
-      const orgName = store.getOrg(sub.orgId)?.name ?? 'TagExplore';
+      const orgName = store.getOrg(sub.orgId)?.name ?? 'Farmranger Tags';
       const result = await send(
         sub,
         {

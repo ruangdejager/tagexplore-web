@@ -24,8 +24,8 @@ export function LoginScreen({ onLoggedIn }: { onLoggedIn: (u: AuthUser) => void 
 
   return (
     <div className="login">
-      <img className="login-logo" src="/m/icons/icon-192.png" alt="" width="72" height="72" />
-      <h1 className="login-title">TagExplore</h1>
+      <img className="login-logo" src="/m/farmranger-logo.svg" alt="" width="84" height="84" />
+      <h1 className="login-title">Farmranger Tags</h1>
       <form className="login-form" onSubmit={submit}>
         <label>
           <span>Username</span>

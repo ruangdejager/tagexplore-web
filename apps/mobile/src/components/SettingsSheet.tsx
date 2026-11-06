@@ -85,7 +85,7 @@ function NotificationSettings({ orgId, orgs }: { orgId: string | null; orgs: Arr
   } else if (support === 'needs-install') {
     body = (
       <p className="hint">
-        To get alerts on this iPhone, add TagExplore to your Home Screen first: tap <ShareIcon /> <strong>Share</strong>,
+        To get alerts on this iPhone, add Farmranger Tags to your Home Screen first: tap <ShareIcon /> <strong>Share</strong>,
         then <strong>Add to Home Screen</strong>, and open it from the new icon.
       </p>
     );
@@ -132,7 +132,7 @@ function NotificationSettings({ orgId, orgs }: { orgId: string | null; orgs: Arr
         {switching && <p className="hint">Currently on for {orgName(state.orgId)}.</p>}
         {state.permission === 'denied' ? (
           <p className="hint bad">
-            Notifications are blocked for this app. Allow them in your phone’s Settings › Notifications › TagExplore, then come back here.
+            Notifications are blocked for this app. Allow them in your phone’s Settings › Notifications › Farmranger Tags, then come back here.
           </p>
         ) : (
           <button

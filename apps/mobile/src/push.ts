@@ -85,7 +85,7 @@ export async function enablePush(orgId: string): Promise<PushState> {
   if (permission !== 'granted') {
     throw new Error(
       permission === 'denied'
-        ? 'Notifications are blocked. Turn them on in Settings › Notifications › TagExplore.'
+        ? 'Notifications are blocked. Turn them on in Settings › Notifications › Farmranger Tags.'
         : 'Notifications were not allowed.',
     );
   }
