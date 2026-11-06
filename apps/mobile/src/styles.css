@@ -24,6 +24,12 @@
 
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
+
+  /* The floating tab dock: its height, its gap above the screen's bottom edge
+     (clear of the home indicator), and the room content leaves for it. */
+  --dock-h: 62px;
+  --dock-bottom: max(calc(var(--safe-bottom) - 16px), 10px);
+  --dock-space: calc(var(--dock-h) + var(--dock-bottom) + 12px);
   --safe-left: env(safe-area-inset-left, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
 
@@ -365,30 +371,52 @@ input:focus {
   pointer-events: none;
 }
 
-/* ---- Tab bar -------------------------------------------------------------- */
+/* ---- Tab dock --------------------------------------------------------------- */
 
+/* A rounded, framed panel floating over the bottom of the screen, like the
+   iPhone home screen's dock. The map runs on underneath it, softened by the
+   blur; the lists leave room for it (--dock-space). */
 .tabbar {
-  flex: none;
+  position: absolute;
+  left: calc(var(--safe-left) + 10px);
+  right: calc(var(--safe-right) + 10px);
+  bottom: var(--dock-bottom);
+  z-index: 900;
+  height: var(--dock-h);
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  border-top: 1px solid var(--line);
-  background: var(--panel);
-  /* Clear of the home indicator, without the full inset's empty band. */
-  padding-bottom: max(calc(var(--safe-bottom) - 12px), 0px);
+  gap: 4px;
+  padding: 5px;
+  border-radius: 28px;
+  border: 1px solid rgba(232, 228, 214, 0.14);
+  background: rgba(27, 30, 23, 0.72);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  backdrop-filter: blur(18px) saturate(1.4);
+  box-shadow:
+    0 10px 30px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
 .tab {
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 2px;
-  padding: 8px 0 6px;
-  min-height: 52px;
+  border-radius: 22px;
   color: var(--ink-dim);
+  transition:
+    background 150ms,
+    color 150ms;
 }
 
 .tab.active {
   color: var(--veld-lit);
+  background: rgba(79, 191, 139, 0.16);
+}
+
+.tab:active {
+  background: rgba(232, 228, 214, 0.08);
 }
 
 .tab-icon {
@@ -414,7 +442,7 @@ input:focus {
 
 .tab-label {
   font-family: var(--display);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -423,7 +451,7 @@ input:focus {
 /* ---- Lists ---------------------------------------------------------------- */
 
 .list-page {
-  padding: 12px 12px 24px;
+  padding: 12px 12px var(--dock-space);
 }
 
 .summary {
@@ -683,7 +711,7 @@ input:focus {
   position: absolute;
   left: 16px;
   right: 16px;
-  bottom: 16px;
+  bottom: var(--dock-space);
   z-index: 500;
   padding: 10px 14px;
   border-radius: 10px;
@@ -1128,6 +1156,11 @@ input:focus {
 
 .leaflet-control-attribution {
   font-size: 9px;
+}
+
+/* The map's credit line sits just above the dock rather than under it. */
+.leaflet-bottom {
+  bottom: calc(var(--dock-space) - 8px);
 }
 
 /* ---- Sheets --------------------------------------------------------------- */
