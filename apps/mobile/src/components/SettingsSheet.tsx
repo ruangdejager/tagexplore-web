@@ -10,6 +10,8 @@ export function SettingsSheet(props: {
   orgId: string | null;
   showFunctions: boolean;
   onShowFunctionsChange: (v: boolean) => void;
+  showGeofences: boolean;
+  onShowGeofencesChange: (v: boolean) => void;
   onClose: () => void;
   onLogout: () => void;
 }): JSX.Element {
@@ -24,6 +26,12 @@ export function SettingsSheet(props: {
 
       <section className="settings-section">
         <h2>Map</h2>
+        <SettingToggle
+          label="Geofences"
+          note="The organisation's boundaries on the map"
+          checked={props.showGeofences}
+          onChange={props.onShowGeofencesChange}
+        />
         <button
           type="button"
           role="switch"
@@ -33,7 +41,7 @@ export function SettingsSheet(props: {
         >
           <span className="fn-text">
             <span>Map functions</span>
-            <small>Geofences, link view and a 7-day heatmap, under the count on the map</small>
+            <small>Link view or a 7-day heatmap, under the count on the map</small>
           </span>
           <span className="switch-track" data-on={props.showFunctions ? '1' : '0'}>
             <span />
@@ -158,6 +166,20 @@ function NotificationSettings({ orgId, orgs }: { orgId: string | null; orgs: Arr
       {body}
       {message && <p className={`hint ${message.bad ? 'bad' : 'good'}`}>{message.text}</p>}
     </section>
+  );
+}
+
+function SettingToggle(props: { label: string; note: string; checked: boolean; onChange: (v: boolean) => void }): JSX.Element {
+  return (
+    <button type="button" role="switch" aria-checked={props.checked} className="setting-toggle" onClick={() => props.onChange(!props.checked)}>
+      <span className="fn-text">
+        <span>{props.label}</span>
+        <small>{props.note}</small>
+      </span>
+      <span className="switch-track" data-on={props.checked ? '1' : '0'}>
+        <span />
+      </span>
+    </button>
   );
 }
 

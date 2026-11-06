@@ -15,7 +15,7 @@ import * as api from '../api.js';
 import { usePref } from '../prefs.js';
 import type { OrgData } from '../useOrgData.js';
 import { CountBlock } from './CountBlock.js';
-import { FunctionsBlock, HEATMAP_HOURS, NO_MAP_FUNCTIONS, type MapFunctions } from './FunctionsBlock.js';
+import { FunctionsBlock, HEATMAP_HOURS, NO_MAP_FUNCTIONS, normaliseMapFunctions, type MapFunctions } from './FunctionsBlock.js';
 
 const COLOR = { alert: '#c13615', checkedIn: '#4fbf8b', notCheckedIn: '#9aa08c' } as const;
 const SOUTH_AFRICA: [number, number] = [-28.8, 24.5];
@@ -57,6 +57,8 @@ export function MapTab(props: {
   onOpenTag: (tagId: string, snap?: TagSnapshot) => void;
   /** Whether the Map functions block is switched on in settings. Off means every function is off. */
   showFunctions: boolean;
+  /** The organisation's geofences, switched on in Settings. Independent of Map functions. */
+  showGeofences: boolean;
 }): JSX.Element {
   const { orgId, data, visible, focus } = props;
   const el = useRef<HTMLDivElement | null>(null);
@@ -79,8 +81,10 @@ export function MapTab(props: {
   const [historyLinks, setHistoryLinks] = useState<LinkReading[] | null>(null);
   const [historyDevices, setHistoryDevices] = useState<DeviceRow[] | null>(null);
 
-  const [savedFunctions, setFunctions] = usePref<MapFunctions>('tx-m-map-functions', NO_MAP_FUNCTIONS);
+  const [storedFunctions, setFunctions] = usePref<MapFunctions>('tx-m-map-functions', NO_MAP_FUNCTIONS);
+  const savedFunctions = normaliseMapFunctions(storedFunctions);
   const fns = props.showFunctions ? savedFunctions : NO_MAP_FUNCTIONS;
+  const showGeofences = props.showGeofences;
   const [geofences, setGeofences] = useState<GeofenceRegion[] | null>(null);
   const [heatPoints, setHeatPoints] = useState<GpsPoint[] | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -122,7 +126,7 @@ export function MapTab(props: {
   // Geofences: fetched once per organisation, the first time they're switched on.
   useEffect(() => setGeofences(null), [orgId]);
   useEffect(() => {
-    if (!fns.geofences || geofences !== null) return;
+    if (!showGeofences || geofences !== null) return;
     let cancelled = false;
     api
       .fetchGeofences(orgId)
@@ -131,7 +135,7 @@ export function MapTab(props: {
     return () => {
       cancelled = true;
     };
-  }, [fns.geofences, geofences, orgId]);
+  }, [showGeofences, geofences, orgId]);
 
   // Heatmap: the last 7 days of raw fixes, re-read as new data lands.
   useEffect(() => {
@@ -278,7 +282,7 @@ export function MapTab(props: {
     const group = geofenceLayer.current;
     if (!m || !group) return;
     group.clearLayers();
-    if (!fns.geofences || !geofences) {
+    if (!showGeofences || !geofences) {
       if (m.hasLayer(group)) m.removeLayer(group);
       return;
     }
@@ -296,13 +300,13 @@ export function MapTab(props: {
     group.eachLayer((l) => {
       (l as L.Polygon).bringToBack();
     });
-  }, [fns.geofences, geofences]);
+  }, [showGeofences, geofences]);
 
   // Link view: a faint line from each reader (or the tag a reading relayed
   // through) to the tag it heard in the latest round, with a ball pushed along
   // it to show direction. Same rules as the desktop. The readers themselves
   // are drawn too, so every line has a visible start. Sits out while the
-  // heatmap is on, which has no per-tag positions to link.
+  // heatmap is on (the two are exclusive anyway).
   const linksOn = fns.links && !fns.heatmap;
   useEffect(() => {
     const m = map.current;
@@ -401,7 +405,7 @@ export function MapTab(props: {
         streamConnected={data.live}
       />
       {props.showFunctions && (
-        <FunctionsBlock value={savedFunctions} onChange={setFunctions} geofenceCount={geofences ? geofences.length : null} heatCount={heatPoints ? heatPoints.length : null} />
+        <FunctionsBlock value={savedFunctions} onChange={setFunctions} heatCount={heatPoints ? heatPoints.length : null} />
       )}
       </div>
       {data.updatedAt !== null && !withFix && !fns.heatmap && <div className="map-note">No tag has a GPS fix to show.</div>}

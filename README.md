@@ -248,9 +248,10 @@ organisation, tapping the name opens a dropdown to switch. Notifications and
 signing out are behind the person icon. Every sheet (tag card, settings) closes
 by pulling it down.
 
-Settings › Map functions adds a second block under the count block, with
-switches for the organisation's geofences, link view (which also shows the
-readers) and a heatmap of the last 7 days of GPS fixes. Both blocks shrink to
+Settings › Geofences draws the organisation's boundaries on the map.
+Settings › Map functions adds a second block under the count block, with link
+view (which also shows the readers) or a heatmap of the last 7 days of GPS
+fixes. Only one of those two can be on at a time. Both blocks shrink to
 a pill with their ✕ and open again with a tap. These choices are remembered on
 the phone only.
 

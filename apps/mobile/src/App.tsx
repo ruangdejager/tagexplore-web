@@ -50,6 +50,7 @@ export function App(): JSX.Element {
   const [settingsOpen, setSettingsOpen] = useState(false);
   // Off until switched on in settings.
   const [showFunctions, setShowFunctions] = usePref('tx-m-show-functions', false);
+  const [showGeofences, setShowGeofences] = usePref('tx-m-show-geofences', false);
   const [pendingLink, setPendingLink] = useState(() => readLink(window.location.href));
 
   useEffect(() => {
@@ -174,6 +175,7 @@ export function App(): JSX.Element {
               focus={mapFocus}
               onOpenTag={(tagId, snap) => setOpenTagState({ tagId, ...(snap ? { snap } : {}), fromMap: true })}
               showFunctions={showFunctions}
+              showGeofences={showGeofences}
             />
           </div>
         )}
@@ -216,6 +218,8 @@ export function App(): JSX.Element {
           orgId={orgId}
           showFunctions={showFunctions}
           onShowFunctionsChange={setShowFunctions}
+          showGeofences={showGeofences}
+          onShowGeofencesChange={setShowGeofences}
           onClose={() => setSettingsOpen(false)}
           onLogout={logout}
         />
