@@ -2427,13 +2427,28 @@ export class Store {
                FROM scoped WHERE has_gps = 1
            ) WHERE rn = 1
          ),
-         counts AS (SELECT tag_id, COUNT(DISTINCT bracket_at) AS n FROM scoped GROUP BY tag_id)
+         counts AS (SELECT tag_id, COUNT(DISTINCT bracket_at) AS n FROM scoped GROUP BY tag_id),
+         -- The current still streak: every still reading after the tag's last
+         -- reading that wasn't still (moving, or no movement state at all).
+         last_not_still AS (
+           SELECT tag_id, MAX(bracket_at) AS at FROM scoped WHERE movement_state IS NOT 1 GROUP BY tag_id
+         ),
+         still_since AS (
+           SELECT s.tag_id, MIN(s.bracket_at) AS since
+             FROM scoped s LEFT JOIN last_not_still m ON m.tag_id = s.tag_id
+            WHERE s.movement_state = 1 AND (m.at IS NULL OR s.bracket_at > m.at)
+            GROUP BY s.tag_id
+         )
          SELECT l.tag_id, ot.label, l.bracket_at AS last_seen_at, l.battery_mv, l.rssi, l.hops,
                 l.wave_count, l.movement_state, l.fw_patch, l.link_id, l.device_imei AS source_device_imei,
-                g.lat, g.lon, g.bracket_at AS fix_at, g.gps_age_s, c.n AS reading_count
+                g.lat, g.lon, g.bracket_at AS fix_at, g.gps_age_s, c.n AS reading_count,
+                -- Two readers disagreeing in the latest round can leave no
+                -- streak to measure; the latest reading itself is the start then.
+                CASE WHEN l.movement_state = 1 THEN COALESCE(ss.since, l.bracket_at) END AS still_since
            FROM latest l
            LEFT JOIN latest_gps g ON g.tag_id = l.tag_id
            LEFT JOIN counts c ON c.tag_id = l.tag_id
+           LEFT JOIN still_since ss ON ss.tag_id = l.tag_id
            LEFT JOIN org_tags ot ON ot.org_id = :org AND ot.tag_id = l.tag_id
           ORDER BY l.bracket_at DESC, l.tag_id ASC`,
       )
@@ -2454,6 +2469,7 @@ export class Store {
       fix_at: number | null;
       gps_age_s: number | null;
       reading_count: number;
+      still_since: number | null;
     }>;
 
     return rows.map((r) => ({
@@ -2473,6 +2489,7 @@ export class Store {
       fixAt: r.fix_at,
       gpsAgeSeconds: r.gps_age_s,
       readingCount: r.reading_count,
+      stillSince: r.still_since,
     }));
   }
 

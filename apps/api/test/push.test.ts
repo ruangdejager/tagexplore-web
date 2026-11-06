@@ -92,6 +92,7 @@ describe('computeTagAlerts', () => {
     fixAt: null,
     gpsAgeSeconds: null,
     readingCount: 1,
+    stillSince: null,
     ...partial,
   });
 
@@ -99,7 +100,7 @@ describe('computeTagAlerts', () => {
     const alerts = computeTagAlerts(
       [
         snap({ tagId: 'MOVE' }),
-        snap({ tagId: 'STIL', movementState: 1, fixAt: T0 }),
+        snap({ tagId: 'STIL', movementState: 1, fixAt: T0, stillSince: T0 - HOUR }),
         snap({ tagId: 'OLD1', lastSeenAt: T0 - 9 * HOUR }),
         snap({ tagId: 'OLD2', lastSeenAt: T0 - 9 * HOUR, movementState: 1 }),
       ],
@@ -110,7 +111,7 @@ describe('computeTagAlerts', () => {
       ['OLD1', 'stale'],
       ['OLD2', 'still'],
     ]);
-    expect(alerts[0]!.hasGpsFix).toBe(true);
+    expect(alerts[0]!.fixAfterStill).toBe(T0);
   });
 });
 
@@ -188,7 +189,7 @@ describe('alert notifier', () => {
     expect(first.notified.map((a) => a.tagId)).toEqual(['AAAA']);
     expect(sent).toHaveLength(1);
     expect(sent[0]!.payload.title).toBe('Farm A: AAAA');
-    expect(sent[0]!.payload.body).toBe('Tag still');
+    expect(sent[0]!.payload.body).toBe('Tag still · No fix');
 
     await n.checkOrg(ORG, T0 + HOUR + 60_000);
     expect(sent).toHaveLength(1);
@@ -229,6 +230,35 @@ describe('alert notifier', () => {
     await n.checkOrg(ORG, T0);
     expect(sent).toHaveLength(1);
     expect(sent[0]!.payload.title).toBe('Farm A: 2 new alerts');
+  });
+
+  it('works out when a tag went still, and whether a fix came in after', async () => {
+    const withFix = (r: ReadingInput): ReadingInput => ({ ...r, hasGps: true, lat: -33.9, lon: 18.8 });
+    // Moving with a fix, then two still rounds with none.
+    store.writeReadings(
+      [withFix(reading('AAAA', T0, 0)), reading('AAAA', T0 + HOUR, 1), reading('AAAA', T0 + 2 * HOUR, 1)],
+      [],
+    );
+    const window = { orgId: ORG, from: T0 - HOUR, to: T0 + 3 * HOUR };
+    let snap = store.tagSnapshots(window).find((s) => s.tagId === 'AAAA')!;
+    expect(snap.stillSince).toBe(T0 + HOUR);
+    expect(snap.fixAt).toBe(T0);
+
+    const first = await notifier().checkOrg(ORG, T0 + 2 * HOUR);
+    expect(first.notified[0]!.fixAfterStill).toBeNull();
+    expect(sent[0]!.payload.body).toBe('Tag still · No fix');
+
+    // A later still round brings a fix: that one is after it went still.
+    store.writeReadings([withFix(reading('AAAA', T0 + 3 * HOUR, 1))], []);
+    snap = store.tagSnapshots({ ...window, to: T0 + 4 * HOUR }).find((s) => s.tagId === 'AAAA')!;
+    expect(snap.stillSince).toBe(T0 + HOUR);
+    const alert = computeTagAlerts([snap], T0 + 3 * HOUR)[0]!;
+    expect(alert.fixAfterStill).toBe(T0 + 3 * HOUR);
+
+    // Moving again ends the streak.
+    store.writeReadings([reading('AAAA', T0 + 4 * HOUR, 0)], []);
+    snap = store.tagSnapshots({ ...window, to: T0 + 5 * HOUR }).find((s) => s.tagId === 'AAAA')!;
+    expect(snap.stillSince).toBeNull();
   });
 
   it('drops a subscription the push service says is gone', async () => {

@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { formatAge, type OrgTagRow, type TagSnapshot } from '@tagexplore/core';
+import { fixAfterStill, formatAge, type OrgTagRow, type TagSnapshot } from '@tagexplore/core';
 
 interface Props {
   /** Tags switched on in the main sidebar list — what this panel actually watches. */
@@ -27,7 +27,9 @@ export function AlertsPanel({ watchedTagIds, snapshots, tags, now, onSelectTag }
 
   const alerts = useMemo(() => {
     const staleCutoff = now - STALE_HOURS * 3_600_000;
-    const rows: Array<{ key: string; tagId: string; message: string; hasGpsFix?: boolean }> = [];
+    // `fix` only on a still alert: the newest GPS fix since the tag went
+    // still, or null for "No fix" (none has arrived since).
+    const rows: Array<{ key: string; tagId: string; message: string; fix?: { at: number | null; stillSince: number } }> = [];
 
     for (const tagId of watchedTagIds) {
       const snap = snapshots.find((s) => s.tagId === tagId);
@@ -36,9 +38,14 @@ export function AlertsPanel({ watchedTagIds, snapshots, tags, now, onSelectTag }
       // a stale one — "still" already explains why it hasn't moved, so "not
       // seen in Xh" would just be a second, redundant alarm for the same tag.
       if (snap.movementState === 1) {
-        // fixAt is the latest GPS-carrying reading's bracket; it matches
-        // lastSeenAt only when that latest (still) reading itself had a fix.
-        rows.push({ key: `${tagId}-still`, tagId, message: 'still', hasGpsFix: snap.fixAt === snap.lastSeenAt });
+        // Whether a GPS fix has come in since the tag went still, which is
+        // what says where it actually stopped.
+        rows.push({
+          key: `${tagId}-still`,
+          tagId,
+          message: 'still',
+          fix: { at: fixAfterStill(snap), stillSince: snap.stillSince ?? snap.lastSeenAt },
+        });
       } else if (snap.lastSeenAt < staleCutoff) {
         rows.push({ key: `${tagId}-stale`, tagId, message: `not seen in ${formatAge(now - snap.lastSeenAt)}` });
       }
@@ -80,9 +87,16 @@ export function AlertsPanel({ watchedTagIds, snapshots, tags, now, onSelectTag }
                   {a.tagId}
                   {labelFor.get(a.tagId) && <span className="tag-label"> {labelFor.get(a.tagId)}</span>}
                 </span>
-                {a.hasGpsFix !== undefined && (
-                  <span className={`alert-gps-fix ${a.hasGpsFix ? 'alert-gps-fix-yes' : 'alert-gps-fix-no'}`}>
-                    gps fix {a.hasGpsFix ? '✓' : '✗'}
+                {a.fix && (
+                  <span
+                    className={`alert-gps-fix ${a.fix.at !== null ? 'alert-gps-fix-yes' : 'alert-gps-fix-no'}`}
+                    title={
+                      a.fix.at !== null
+                        ? `GPS fix ${formatAge(now - a.fix.at)} ago, after it went still ${formatAge(now - a.fix.stillSince)} ago`
+                        : `No GPS fix since it went still ${formatAge(now - a.fix.stillSince)} ago`
+                    }
+                  >
+                    {a.fix.at !== null ? `fix ✓ ${formatAge(now - a.fix.at)} ago` : 'No fix'}
                   </span>
                 )}
               </span>

@@ -8,6 +8,7 @@ import {
   positionAge,
   shortDeviceId,
   type DeviceRow,
+  type TagAlert,
   type TagSnapshot,
 } from '@tagexplore/core';
 import { alertText } from '../format.js';
@@ -47,7 +48,9 @@ export function TagSheet(props: {
           <div className="sheet-title">{props.tagId}</div>
           <div className="sheet-sub">{row?.label ?? tag?.label ?? (tag ? AGE_LABEL[positionAge(tag.fixAt, realNow)] : '')}</div>
         </div>
-        {!historic && row?.alert && <span className="pill bad">{alertText(row.alert, realNow)}</span>}
+        {!historic && row?.alert && (
+          <span className="pill bad">{row.alert.kind === 'still' ? 'Still' : alertText(row.alert, realNow)}</span>
+        )}
         {historic && <span className="pill">Past round</span>}
         {row?.hidden && <span className="pill">Switched off</span>}
       </div>
@@ -55,7 +58,10 @@ export function TagSheet(props: {
       {!tag ? (
         <p className="empty">No reading from this tag in the last year.</p>
       ) : (
-        <TagFacts tag={tag} devices={props.devices} now={historic ? now : realNow} />
+        <>
+          {!historic && row?.alert?.kind === 'still' && <StillFacts alert={row.alert} now={realNow} />}
+          <TagFacts tag={tag} devices={props.devices} now={historic ? now : realNow} />
+        </>
       )}
 
       <div className="button-row">
@@ -76,6 +82,27 @@ export function TagSheet(props: {
         )}
       </div>
     </Sheet>
+  );
+}
+
+/** For a still alert: when it went still, and whether a GPS fix has come in since. */
+function StillFacts({ alert, now }: { alert: TagAlert; now: number }): JSX.Element {
+  const since = alert.stillSince ?? alert.lastSeenAt;
+  const fix = alert.fixAfterStill ?? null;
+  return (
+    <dl className="facts still-facts">
+      <div>
+        <dt>Still since</dt>
+        <dd>
+          {formatAge(now - since)} ago
+          <span className="mono small">{timestamp(since)}</span>
+        </dd>
+      </div>
+      <div>
+        <dt>Fix after still</dt>
+        <dd className={fix === null ? 'fix-no' : 'fix-yes'}>{fix === null ? 'No fix' : `✓ ${formatAge(now - fix)} ago`}</dd>
+      </div>
+    </dl>
   );
 }
 

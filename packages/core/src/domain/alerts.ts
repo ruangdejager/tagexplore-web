@@ -33,8 +33,22 @@ export interface TagAlert {
   label: string | null;
   kind: TagAlertKind;
   lastSeenAt: number;
-  /** Only for `still`: whether that latest (still) reading itself carried a GPS fix. */
-  hasGpsFix?: boolean;
+  /** Only for `still`: when the tag went still (the start of its current still streak). */
+  stillSince?: number;
+  /**
+   * Only for `still`: the newest GPS fix taken at or after the tag went still,
+   * or null when none has arrived since. Null is what the apps show as "No fix".
+   */
+  fixAfterStill?: number | null;
+}
+
+/**
+ * The newest fix at or after the tag went still, or null. A fix in the very
+ * reading that first reported still counts: that is where the tag stopped.
+ */
+export function fixAfterStill(snap: Pick<TagSnapshot, 'fixAt' | 'stillSince' | 'lastSeenAt'>): number | null {
+  const since = snap.stillSince ?? snap.lastSeenAt;
+  return snap.fixAt !== null && snap.fixAt >= since ? snap.fixAt : null;
 }
 
 export function computeTagAlerts(snapshots: TagSnapshot[], nowMs: number): TagAlert[] {
@@ -47,7 +61,8 @@ export function computeTagAlerts(snapshots: TagSnapshot[], nowMs: number): TagAl
         label: snap.label,
         kind: 'still',
         lastSeenAt: snap.lastSeenAt,
-        hasGpsFix: snap.fixAt === snap.lastSeenAt,
+        stillSince: snap.stillSince ?? snap.lastSeenAt,
+        fixAfterStill: fixAfterStill(snap),
       });
     } else if (snap.lastSeenAt < staleCutoff) {
       alerts.push({ tagId: snap.tagId, label: snap.label, kind: 'stale', lastSeenAt: snap.lastSeenAt });
@@ -58,5 +73,6 @@ export function computeTagAlerts(snapshots: TagSnapshot[], nowMs: number): TagAl
 
 /** A short human line for one alert, used as a notification body and in the mobile list. */
 export function describeTagAlert(alert: TagAlert, nowMs: number): string {
-  return alert.kind === 'still' ? 'still' : `not seen in ${formatAge(nowMs - alert.lastSeenAt)}`;
+  if (alert.kind === 'still') return alert.fixAfterStill == null ? 'still · No fix' : 'still · fix after still';
+  return `not seen in ${formatAge(nowMs - alert.lastSeenAt)}`;
 }

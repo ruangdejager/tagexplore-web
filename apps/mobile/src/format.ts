@@ -6,8 +6,15 @@ export function ago(at: number | null | undefined, now: number = Date.now()): st
   return `${formatAge(now - at)} ago`;
 }
 
+/**
+ * One line for an alert. A still alert also says whether a GPS fix has come in
+ * since the tag went still: "No fix" when none has.
+ */
 export function alertText(alert: TagAlert, now: number = Date.now()): string {
-  return alert.kind === 'still' ? 'Still' : `Not seen in ${formatAge(now - alert.lastSeenAt)}`;
+  if (alert.kind === 'still') {
+    return alert.fixAfterStill == null ? 'Still · No fix' : `Still · fix ✓ ${formatAge(now - alert.fixAfterStill)} ago`;
+  }
+  return `Not seen in ${formatAge(now - alert.lastSeenAt)}`;
 }
 
 export type RowStatus = 'alert' | 'ok' | 'quiet';

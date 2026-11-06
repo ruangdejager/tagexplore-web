@@ -342,6 +342,13 @@ export interface TagSnapshot {
   gpsAgeSeconds: number | null;
   /** Distinct discovery rounds this tag appeared in, over the requested window. */
   readingCount: number;
+  /**
+   * When the tag's current still streak began: the first reading reporting
+   * still after its last reading that didn't. Null unless the latest reading
+   * is still. A streak that began before the requested window starts at the
+   * window's first reading.
+   */
+  stillSince: number | null;
 }
 
 /**

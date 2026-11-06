@@ -1073,6 +1073,20 @@ input:focus {
   border-top: 1px solid var(--line);
 }
 
+.still-facts {
+  margin-bottom: 12px;
+  border-color: rgba(193, 54, 21, 0.45);
+}
+
+.fix-no {
+  color: var(--alert-ink);
+  font-weight: 500;
+}
+
+.fix-yes {
+  color: var(--veld-lit);
+}
+
 .facts dt {
   color: var(--ink-dim);
 }
