@@ -42,6 +42,12 @@ body,
   margin: 0;
 }
 
+/* The app is drawn over the whole page and never scrolls it. */
+html,
+body {
+  overflow: hidden;
+}
+
 /* The page behind the app is the tab bar's colour, so if WebKit ever leaves
    a strip under the tab bar it reads as part of the bar, not a gap. */
 body {
@@ -83,8 +89,11 @@ input:focus {
 /* ---- Loading screen ------------------------------------------------------- */
 
 .loading-screen {
-  position: fixed;
-  inset: 0;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--app-h, 100%);
   z-index: 3000;
   display: flex;
   flex-direction: column;
@@ -188,9 +197,20 @@ input:focus {
 
 /* ---- Shell ---------------------------------------------------------------- */
 
+/*
+ * Absolute, not fixed, and as tall as --app-h. Installed on an iPhone, iOS
+ * lays the page out one status bar shorter than the screen it draws on. A
+ * fixed element stops at that shorter edge and leaves a blank strip under the
+ * tab bar, and a fixed element made taller is cut off there. Page content is
+ * drawn all the way down, so the shell is page content sized to the screen.
+ * See syncAppHeight in main.tsx.
+ */
 .shell {
-  position: fixed;
-  inset: 0;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--app-h, 100%);
   background: var(--bg);
   display: flex;
   flex-direction: column;
@@ -353,7 +373,8 @@ input:focus {
   grid-template-columns: repeat(3, 1fr);
   border-top: 1px solid var(--line);
   background: var(--panel);
-  padding-bottom: var(--safe-bottom);
+  /* Clear of the home indicator, without the full inset's empty band. */
+  padding-bottom: max(calc(var(--safe-bottom) - 12px), 0px);
 }
 
 .tab {
@@ -1111,8 +1132,9 @@ input:focus {
 
 /* ---- Sheets --------------------------------------------------------------- */
 
+/* Inside the shell, so a sheet reaches the bottom of the screen with it. */
 .sheet-layer {
-  position: fixed;
+  position: absolute;
   inset: 0;
   z-index: 1000;
   display: flex;
@@ -1492,7 +1514,8 @@ input:focus {
 /* ---- Login ---------------------------------------------------------------- */
 
 .login {
-  min-height: 100%;
+  min-height: var(--app-h, 100%);
+  background: var(--bg);
   display: flex;
   flex-direction: column;
   align-items: center;
