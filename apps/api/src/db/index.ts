@@ -364,6 +364,41 @@ CREATE TABLE IF NOT EXISTS bot_tokens (
 );
 
 CREATE INDEX IF NOT EXISTS bot_tokens_org ON bot_tokens(org_id);
+
+-- One row per phone (or browser) that switched alert notifications on in the
+-- mobile app. The endpoint is the push service URL the browser handed us and
+-- is unique per installation, so it is the natural key: enabling again on the
+-- same phone just refreshes the row. Each subscription follows one
+-- organisation, the one picked when it was switched on.
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  endpoint         TEXT PRIMARY KEY,
+  user_id          TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  org_id           TEXT NOT NULL REFERENCES organisations(id) ON DELETE CASCADE,
+  p256dh           TEXT NOT NULL,
+  auth             TEXT NOT NULL,
+  user_agent       TEXT,
+  created_at       INTEGER NOT NULL,
+  last_success_at  INTEGER,
+  last_error       TEXT
+);
+
+CREATE INDEX IF NOT EXISTS push_subscriptions_org ON push_subscriptions(org_id);
+
+-- Which alerts each organisation's tags are in right now, as the server last
+-- worked them out. A notification goes out when a tag *enters* an alert, not
+-- on every check while it stays in one, and this table is what tells the two
+-- apart. Rows are kept (active = 0) once an alert clears so last_notified_at
+-- survives, which is what stops a tag flapping between moving and still from
+-- notifying every round.
+CREATE TABLE IF NOT EXISTS alert_state (
+  org_id            TEXT NOT NULL REFERENCES organisations(id) ON DELETE CASCADE,
+  tag_id            TEXT NOT NULL,
+  kind              TEXT NOT NULL,
+  active            INTEGER NOT NULL DEFAULT 1,
+  since             INTEGER NOT NULL,
+  last_notified_at  INTEGER,
+  PRIMARY KEY (org_id, tag_id, kind)
+);
 `;
 
 export interface UserRow {
@@ -689,6 +724,52 @@ function excludeDeviceFilterClause(
     return `:${key}`;
   });
   return { sql: ` AND ${alias}.device_imei NOT IN (${placeholders.join(', ')})`, params };
+}
+
+export interface PushSubscriptionRow {
+  endpoint: string;
+  userId: string;
+  orgId: string;
+  p256dh: string;
+  auth: string;
+  userAgent: string | null;
+  createdAt: number;
+  lastSuccessAt: number | null;
+  lastError: string | null;
+}
+
+interface RawPushSubscriptionRow {
+  endpoint: string;
+  user_id: string;
+  org_id: string;
+  p256dh: string;
+  auth: string;
+  user_agent: string | null;
+  created_at: number;
+  last_success_at: number | null;
+  last_error: string | null;
+}
+
+function toPushSubscriptionRow(r: RawPushSubscriptionRow): PushSubscriptionRow {
+  return {
+    endpoint: r.endpoint,
+    userId: r.user_id,
+    orgId: r.org_id,
+    p256dh: r.p256dh,
+    auth: r.auth,
+    userAgent: r.user_agent,
+    createdAt: r.created_at,
+    lastSuccessAt: r.last_success_at,
+    lastError: r.last_error,
+  };
+}
+
+export interface AlertStateRow {
+  tagId: string;
+  kind: string;
+  active: boolean;
+  since: number;
+  lastNotifiedAt: number | null;
 }
 
 export class Store {
@@ -2624,6 +2705,103 @@ export class Store {
   deleteBotToken(id: string): boolean {
     const info = this.db.prepare('DELETE FROM bot_tokens WHERE id = ?').run(id);
     return info.changes > 0;
+  }
+
+  // --- Push subscriptions (mobile app alerts) -------------------------------
+
+  /** Saves or refreshes one phone's subscription. Re-enabling on the same phone moves it to the new user/org. */
+  upsertPushSubscription(input: {
+    endpoint: string;
+    userId: string;
+    orgId: string;
+    p256dh: string;
+    auth: string;
+    userAgent: string | null;
+    now: number;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO push_subscriptions (endpoint, user_id, org_id, p256dh, auth, user_agent, created_at)
+         VALUES (:endpoint, :userId, :orgId, :p256dh, :auth, :userAgent, :now)
+         ON CONFLICT(endpoint) DO UPDATE SET
+           user_id = excluded.user_id, org_id = excluded.org_id, p256dh = excluded.p256dh,
+           auth = excluded.auth, user_agent = excluded.user_agent, last_error = NULL`,
+      )
+      .run(input);
+  }
+
+  getPushSubscription(endpoint: string): PushSubscriptionRow | null {
+    const row = this.db.prepare('SELECT * FROM push_subscriptions WHERE endpoint = ?').get(endpoint) as
+      | RawPushSubscriptionRow
+      | undefined;
+    return row ? toPushSubscriptionRow(row) : null;
+  }
+
+  deletePushSubscription(endpoint: string): boolean {
+    return this.db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ?').run(endpoint).changes > 0;
+  }
+
+  /**
+   * Every subscription following this organisation whose owner can still see
+   * it: an admin always can, anyone else only while still a member. Someone
+   * removed from an organisation stops getting its alerts without their phone
+   * having to do anything.
+   */
+  listPushSubscriptionsForOrg(orgId: string): PushSubscriptionRow[] {
+    const rows = this.db
+      .prepare(
+        `SELECT s.* FROM push_subscriptions s
+           JOIN users u ON u.id = s.user_id
+          WHERE s.org_id = :org
+            AND (u.role = 'admin' OR EXISTS (SELECT 1 FROM user_orgs uo WHERE uo.user_id = u.id AND uo.org_id = :org))`,
+      )
+      .all({ org: orgId }) as unknown as RawPushSubscriptionRow[];
+    return rows.map(toPushSubscriptionRow);
+  }
+
+  markPushResult(endpoint: string, at: number, error: string | null): void {
+    if (error === null) {
+      this.db.prepare('UPDATE push_subscriptions SET last_success_at = ?, last_error = NULL WHERE endpoint = ?').run(at, endpoint);
+    } else {
+      this.db.prepare('UPDATE push_subscriptions SET last_error = ? WHERE endpoint = ?').run(error, endpoint);
+    }
+  }
+
+  // --- Alert state (what has already been notified) ------------------------
+
+  listAlertState(orgId: string): AlertStateRow[] {
+    const rows = this.db
+      .prepare('SELECT tag_id, kind, active, since, last_notified_at FROM alert_state WHERE org_id = ?')
+      .all(orgId) as Array<{ tag_id: string; kind: string; active: number; since: number; last_notified_at: number | null }>;
+    return rows.map((r) => ({
+      tagId: r.tag_id,
+      kind: r.kind,
+      active: toBool(r.active),
+      since: r.since,
+      lastNotifiedAt: r.last_notified_at,
+    }));
+  }
+
+  /** Marks an alert as having just started (or still running, if it already was — `since` is kept then). */
+  setAlertActive(orgId: string, tagId: string, kind: string, now: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO alert_state (org_id, tag_id, kind, active, since) VALUES (?, ?, ?, 1, ?)
+         ON CONFLICT(org_id, tag_id, kind) DO UPDATE SET
+           since = CASE WHEN alert_state.active = 1 THEN alert_state.since ELSE excluded.since END,
+           active = 1`,
+      )
+      .run(orgId, tagId, kind, now);
+  }
+
+  setAlertCleared(orgId: string, tagId: string, kind: string): void {
+    this.db.prepare('UPDATE alert_state SET active = 0 WHERE org_id = ? AND tag_id = ? AND kind = ?').run(orgId, tagId, kind);
+  }
+
+  markAlertNotified(orgId: string, tagId: string, kind: string, at: number): void {
+    this.db
+      .prepare('UPDATE alert_state SET last_notified_at = ? WHERE org_id = ? AND tag_id = ? AND kind = ?')
+      .run(at, orgId, tagId, kind);
   }
 
   // --- Raw readings for the bot ---------------------------------------------

@@ -142,6 +142,20 @@ export interface Config {
    */
   foundingAdminUsername: string;
   foundingAdminPassword: string;
+
+  /**
+   * VAPID key pair for Web Push (the mobile app's alert notifications). Both
+   * blank means the server generates a pair on first boot and keeps it in the
+   * database, which is enough as long as the database persists — every phone's
+   * subscription is bound to the public key, so changing it means every phone
+   * has to enable notifications again.
+   */
+  vapidPublicKey: string;
+  vapidPrivateKey: string;
+  /** Contact the push services may use. Defaults to PUBLIC_BASE_URL when that is https. */
+  vapidSubject: string;
+  /** How often alerts are re-checked with no new data arriving — what catches "not seen in 8h". */
+  alertCheckMinutes: number;
 }
 
 export function loadConfig(): Config {
@@ -197,5 +211,19 @@ export function loadConfig(): Config {
     tagsTelemetryTimeoutMs: num(process.env['TAGS_TELEMETRY_TIMEOUT_MS'], 15_000),
     foundingAdminUsername: process.env['FOUNDING_ADMIN_USERNAME'] ?? 'ruandj',
     foundingAdminPassword: process.env['FOUNDING_ADMIN_PASSWORD'] ?? 'Rdj@5046',
+
+    vapidPublicKey: process.env['VAPID_PUBLIC_KEY'] ?? '',
+    vapidPrivateKey: process.env['VAPID_PRIVATE_KEY'] ?? '',
+    vapidSubject: process.env['VAPID_SUBJECT'] || defaultVapidSubject(process.env['PUBLIC_BASE_URL']),
+    alertCheckMinutes: num(process.env['ALERT_CHECK_MINUTES'], 10),
   };
+}
+
+/**
+ * Apple's push service rejects a VAPID token without a usable contact, so an
+ * https PUBLIC_BASE_URL is used when nothing else is set.
+ */
+function defaultVapidSubject(publicBaseUrl: string | undefined): string {
+  const base = (publicBaseUrl ?? '').replace(/\/$/, '');
+  return base.startsWith('https://') ? base : 'mailto:admin@localhost';
 }

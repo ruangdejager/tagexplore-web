@@ -12,6 +12,18 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--workspace", "@tagexplore/api"],
       "port": 8787
+    },
+    {
+      "name": "tagexplore-mobile",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--workspace", "@tagexplore/mobile"],
+      "port": 5174
+    },
+    {
+      "name": "ngrok-mobile",
+      "runtimeExecutable": "ngrok",
+      "runtimeArgs": ["http", "5174", "--log", "stdout"],
+      "port": 4040
     }
   ]
 }

@@ -203,6 +203,7 @@ fixtures (`packages/core/test/fixtures/`). The awkward parts it handles:
 packages/core   parser, session merger, battery/age thresholds, shared API types
 apps/api        Hono + node:sqlite: auth, admin, org-scoped queries, ingest
 apps/web        React + Vite + Leaflet: map, sidebar, tag card, battery trends
+apps/mobile     installable phone app at /m: alerts, tag list, map, push notifications
 ```
 
 `node:sqlite` ships with Node, so there is no native module to compile and no
@@ -217,7 +218,8 @@ cp .env.example .env
 npm run dev
 ```
 
-`npm run dev` starts three watchers — core, the API on :8787, and Vite on :5173
+`npm run dev` starts four watchers — core, the API on :8787, the web app's Vite
+on :5173 and the phone app's Vite on :5174 (at http://localhost:5174/m/), both
 proxying `/api` to it. Open http://localhost:5173, sign up, and (as the founding
 admin) add an organisation, a device IMEI, and the tag IDs that organisation may
 see.
@@ -225,8 +227,67 @@ see.
 ```
 npm test          # parser, store, ingest, scheduler and auth tests
 npm run typecheck
-npm run build     # core -> api -> web; the API then serves apps/web/dist itself
+npm run build     # core -> api -> web -> mobile; the API then serves apps/web/dist at / and apps/mobile/dist at /m
 ```
+
+## Phone app
+
+`apps/mobile` is a separate, small front end for phones, served by the same API
+at `/m/`. It uses the same login and endpoints as the desktop app, plus
+`/api/push/*`, and shares no code or CSS with `apps/web`, so changing one never
+moves the other. It has three tabs:
+
+- **Map** (the default): tag dots without labels, and the count block with its
+  count history. Tapping a history row shows that round on the map. Tapping a
+  dot opens the same card as the desktop.
+- **Tags**: every tag, with the same org-wide on/off switch as the desktop list.
+- **Alerts**: the tags in alert.
+
+The Farmranger logo and the organisation's name sit top left. With more than one
+organisation, tapping the name opens a dropdown to switch. Notifications and
+signing out are behind the person icon. Every sheet (tag card, settings) closes
+by pulling it down.
+
+Settings › Map functions adds a second block under the count block, with
+switches for the organisation's geofences, link view (which also shows the
+readers) and a heatmap of the last 7 days of GPS fixes. Both blocks shrink to
+a pill with their ✕ and open again with a tap. These choices are remembered on
+the phone only.
+
+**Installing on an iPhone.** Open `https://<your-domain>/m/` in Safari, tap
+Share › Add to Home Screen, then open TagExplore from the new icon. It runs full
+screen with no browser bars. An installed app keeps its own cookies, separate
+from Safari, so sign in once inside it. Android Chrome offers to install the
+app itself.
+
+**Notifications.** In the installed app: person icon › Turn on notifications,
+then Send a test. iOS only allows web push for a Home Screen app (iOS 16.4 or
+later) and only over https, so this does not work from a Safari tab or a plain
+`http://` dev server. To test it on a phone in development, tunnel the mobile
+Vite server with ngrok.
+
+The server works out alerts itself (`apps/api/src/push`), using the same rule as
+the desktop alerts panel (`computeTagAlerts` in core): a tag is **still**, or has
+**not been seen in 8h**, and only tags switched on for the organisation count.
+It checks 30 s after new readings land and every `ALERT_CHECK_MINUTES` (10 by
+default), since a tag going quiet sends nothing to react to.
+
+- Each phone gets one notification when a tag *enters* an alert, not on every
+  check while it stays there (`alert_state`).
+- A tag flapping between moving and still notifies at most once every 6 h.
+- Several new alerts in one check go out as a single notification.
+
+Each phone's subscription (`push_subscriptions`) follows one organisation, the
+one chosen when notifications were turned on. It stops receiving alerts when
+its owner leaves that organisation, and is deleted when the push service
+reports it gone.
+
+Web Push is implemented directly on `node:crypto` (VAPID plus RFC 8291
+`aes128gcm`), not the `web-push` package. That package is CommonJS that
+`require`s Node built-ins, which the single-file ESM server bundle cannot do.
+The VAPID key pair comes from `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY`. If both
+are blank, a pair is generated on first boot and stored in the database. Keep
+the pair stable: every phone's subscription is tied to it.
 
 ## Deploying
 

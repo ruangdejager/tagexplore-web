@@ -2,6 +2,7 @@ export * from './types.js';
 export * from './time.js';
 export * from './parse/logParser.js';
 export * from './parse/sessionMerger.js';
+export * from './domain/alerts.js';
 export * from './domain/battery.js';
 export * from './domain/discoveryWindow.js';
 export * from './domain/positionAge.js';

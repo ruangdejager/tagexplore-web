@@ -12,11 +12,12 @@
     "apps/*"
   ],
   "scripts": {
-    "dev": "concurrently -n core,api,web -c cyan,magenta,green \"npm:dev:core\" \"npm:dev:api\" \"npm:dev:web\"",
+    "dev": "concurrently -n core,api,web,mobile -c cyan,magenta,green,yellow \"npm:dev:core\" \"npm:dev:api\" \"npm:dev:web\" \"npm:dev:mobile\"",
     "dev:core": "npm run dev --workspace @tagexplore/core",
     "dev:api": "npm run dev --workspace @tagexplore/api",
     "dev:web": "npm run dev --workspace @tagexplore/web",
-    "build": "npm run build --workspace @tagexplore/core && npm run build --workspace @tagexplore/api && npm run build --workspace @tagexplore/web",
+    "dev:mobile": "npm run dev --workspace @tagexplore/mobile",
+    "build": "npm run build --workspace @tagexplore/core && npm run build --workspace @tagexplore/api && npm run build --workspace @tagexplore/web && npm run build --workspace @tagexplore/mobile",
     "start": "node --env-file-if-exists=.env --no-warnings=ExperimentalWarning apps/api/dist/index.js",
     "test": "vitest run",
     "test:watch": "vitest",

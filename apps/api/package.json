@@ -9,7 +9,8 @@
     "dev": "node --env-file-if-exists=../../.env --no-warnings=ExperimentalWarning --import tsx/esm --watch src/index.ts",
     "build": "tsup",
     "start": "node --env-file-if-exists=.env --no-warnings=ExperimentalWarning dist/index.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "vapid-keys": "node -e \"const c=require('node:crypto').createECDH('prime256v1');c.generateKeys();console.log('VAPID_PUBLIC_KEY='+c.getPublicKey().toString('base64url'));console.log('VAPID_PRIVATE_KEY='+c.getPrivateKey().toString('base64url'))\""
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",

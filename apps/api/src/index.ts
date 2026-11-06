@@ -11,11 +11,13 @@ import { loadConfig } from './config.js';
 import { Store } from './db/index.js';
 import { createLiveBus } from './events/bus.js';
 import { createScheduler } from './ingest/scheduler.js';
+import { createAlertNotifier, resolveVapidKeys } from './push/alertNotifier.js';
 import { createAccountApi } from './routes/account.js';
 import { createAdminApi } from './routes/admin.js';
 import { createApi } from './routes/api.js';
 import { createAuthApi } from './routes/auth.js';
 import { createBotApi, createProvisionApi } from './routes/bot.js';
+import { createPushApi } from './routes/push.js';
 import { createTagDiscoveryApi } from './routes/tagDiscovery.js';
 
 const config = loadConfig();
@@ -29,6 +31,9 @@ await ensureFoundingAdmin(store, config.foundingAdminUsername, config.foundingAd
 // this organisation, and to ask for that reader's position to be re-read.
 const bus = createLiveBus();
 const scheduler = createScheduler(store, config, bus);
+// Server-side alerts for the mobile app's push notifications. It only listens
+// to the bus and reads the store; nothing in the web app depends on it.
+const notifier = createAlertNotifier({ store, config, bus, keys: resolveVapidKeys(store, config) });
 
 const app = new Hono();
 
@@ -62,11 +67,40 @@ app.route('/api/provision', createProvisionApi({ store, config }));
 // Unauthenticated by necessity: the firmware's POST path sends no headers at
 // all, so the IMEI in the path is the only identification there is.
 app.route('/api/v2018-02-04/units', createTagDiscoveryApi({ store, config, bus, scheduler }));
+// The mobile app's notification settings and server-side alert list.
+app.route('/api/push', createPushApi({ store, notifier }));
 app.route('/api', createApi({ store, config, bus }));
 
 // --- Static hosting -------------------------------------------------------
 // In development Vite serves the front end and proxies /api here, so this only
 // engages for a production build.
+// The mobile app (apps/mobile) is a separate build served under /m. It is
+// registered before the web app's static files and fallback, which would
+// otherwise answer every /m path with the desktop app's index.html.
+const mobileRoot = process.env['MOBILE_ROOT'] ?? resolve(process.cwd(), 'apps/mobile/dist');
+const mobileIndexPath = join(mobileRoot, 'index.html');
+const hasMobileBuild = existsSync(mobileIndexPath);
+
+if (hasMobileBuild) {
+  app.get('/m', (c) => c.redirect('/m/', 301));
+  app.use(
+    '/m/*',
+    serveStatic({
+      root: mobileRoot,
+      rewriteRequestPath: (path) => path.replace(/^\/m/, ''),
+      // The service worker and manifest must never be served stale, or a phone
+      // keeps running an old app shell after a deploy.
+      onFound: (path, c) => {
+        if (/(sw\.js|manifest\.webmanifest|index\.html)$/.test(path)) c.header('Cache-Control', 'no-cache');
+      },
+    }),
+  );
+  app.get('/m/*', async (c) => {
+    c.header('Cache-Control', 'no-cache');
+    return c.html(await readFile(mobileIndexPath, 'utf8'));
+  });
+}
+
 const webRoot = config.webRoot ?? resolve(process.cwd(), 'apps/web/dist');
 const indexHtmlPath = join(webRoot, 'index.html');
 const hasWebBuild = existsSync(indexHtmlPath);
@@ -89,6 +123,7 @@ if (hasWebBuild) {
 }
 
 scheduler.start();
+notifier.start();
 
 const pruneTimer = setInterval(() => {
   try {
@@ -103,6 +138,7 @@ const server = serve({ fetch: app.fetch, port: config.port }, (info) => {
   console.log(`TagExplore API listening on http://localhost:${info.port}`);
   console.log(`  data:      ${config.dataDir}`);
   console.log(`  web build: ${hasWebBuild ? webRoot : '(none — use the Vite dev server)'}`);
+  console.log(`  mobile build: ${hasMobileBuild ? `${mobileRoot} (at /m/)` : '(none — use the mobile Vite dev server)'}`);
   console.log(`  settings API: ${config.settingsApiToken ? 'configured' : 'not configured (devices keep their stored schedule)'}`);
   console.log(`  bot provisioning: ${config.botProvisionToken ? 'enabled' : 'disabled (BOT_PROVISION_TOKEN unset)'}`);
 });
@@ -111,6 +147,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(signal, () => {
     console.log(`\n${signal} received, shutting down.`);
     scheduler.stop();
+    notifier.stop();
     server.close(() => {
       store.close();
       process.exit(0);

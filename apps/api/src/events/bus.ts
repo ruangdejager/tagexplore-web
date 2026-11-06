@@ -39,18 +39,25 @@ export interface LiveBus {
   /** Returns the unsubscribe function; calling it twice is harmless. */
   subscribe(orgId: string, listener: LiveListener): () => void;
   subscriberCount(orgId: string): number;
+  /**
+   * Every event for every organisation — for server-side consumers such as
+   * the alert notifier, which watches all organisations at once. Not counted
+   * by `subscriberCount`, which is about browser connections.
+   */
+  subscribeAll(listener: LiveListener): () => void;
 }
 
 export function createLiveBus(): LiveBus {
   const byOrg = new Map<string, Set<LiveListener>>();
+  const everyOrg = new Set<LiveListener>();
 
   return {
     publish(event: LiveEvent): void {
-      const listeners = byOrg.get(event.orgId);
-      if (!listeners) return;
-      // Copied before iterating: a listener that unsubscribes itself while
-      // being notified would otherwise mutate the set mid-loop.
-      for (const listener of [...listeners]) {
+      const listeners = [...(byOrg.get(event.orgId) ?? []), ...everyOrg];
+      // Copied before iterating (the spread above): a listener that
+      // unsubscribes itself while being notified would otherwise mutate the
+      // set mid-loop.
+      for (const listener of listeners) {
         try {
           listener(event);
         } catch (err) {
@@ -79,6 +86,13 @@ export function createLiveBus(): LiveBus {
 
     subscriberCount(orgId: string): number {
       return byOrg.get(orgId)?.size ?? 0;
+    },
+
+    subscribeAll(listener: LiveListener): () => void {
+      everyOrg.add(listener);
+      return () => {
+        everyOrg.delete(listener);
+      };
     },
   };
 }

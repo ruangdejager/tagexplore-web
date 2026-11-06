@@ -1,0 +1,29 @@
+{
+  "name": "@tagexplore/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Installable phone app for TagExplore: alerts, tag list and map, with push notifications. Served at /m by the API.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "icons": "node scripts/make-icons.mjs"
+  },
+  "dependencies": {
+    "@tagexplore/core": "*",
+    "leaflet": "^1.9.4",
+    "leaflet.heat": "^0.2.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/leaflet": "^1.9.15",
+    "@types/leaflet.heat": "^0.2.5",
+    "@types/react": "^18.3.17",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^6.0.5"
+  }
+}
