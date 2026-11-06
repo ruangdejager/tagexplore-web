@@ -10,7 +10,7 @@ import { SettingsSheet } from './components/SettingsSheet.js';
 import { TagSheet } from './components/TagSheet.js';
 import { TagsView } from './components/TagsView.js';
 import { usePref } from './prefs.js';
-import { setBadge } from './push.js';
+import { clearNotifications, setBadge } from './push.js';
 import { useOrgData } from './useOrgData.js';
 
 type Tab = 'map' | 'tags' | 'alerts';
@@ -88,11 +88,11 @@ export function App(): JSX.Element {
   useEffect(() => {
     if (!orgs.length) return;
     if (pendingLink.org && orgs.some((o) => o.id === pendingLink.org)) setOrgId(pendingLink.org);
-    if (pendingLink.tag) {
-      setTab('alerts');
-      setOpenTag(pendingLink.tag);
-    }
+    if (pendingLink.tag) setOpenTag(pendingLink.tag);
     if (pendingLink.org || pendingLink.tag) {
+      // Only a tapped notification opens the app with these, so it lands on
+      // the Alerts tab, which also clears the notifications.
+      setTab('alerts');
       // Clear it from the address bar so a reload doesn't reopen the same tag.
       window.history.replaceState(null, '', '/m/');
       setPendingLink({ org: null, tag: null });
@@ -105,6 +105,27 @@ export function App(): JSX.Element {
 
   const data = useOrgData(user ? orgId : null);
   useEffect(() => setBadge(data.alerts.length), [data.alerts.length]);
+
+  // Viewing the Alerts tab clears the alert notifications: on switching to it,
+  // on coming back to the app while it's showing (including opening the app
+  // from a notification, which lands here), and when a new alert arrives
+  // while it's already on screen.
+  useEffect(() => {
+    if (tab !== 'alerts') return;
+    const clearIfSeen = (): void => {
+      if (document.visibilityState === 'visible') void clearNotifications();
+    };
+    clearIfSeen();
+    const onMessage = (e: MessageEvent): void => {
+      if ((e.data as { type?: string })?.type === 'push') setTimeout(clearIfSeen, 500);
+    };
+    document.addEventListener('visibilitychange', clearIfSeen);
+    navigator.serviceWorker?.addEventListener('message', onMessage);
+    return () => {
+      document.removeEventListener('visibilitychange', clearIfSeen);
+      navigator.serviceWorker?.removeEventListener('message', onMessage);
+    };
+  }, [tab]);
 
   const openRow = useMemo(() => data.rows.find((r) => r.tagId === openTag?.tagId) ?? null, [data.rows, openTag]);
 

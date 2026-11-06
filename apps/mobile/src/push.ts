@@ -117,6 +117,24 @@ export async function disablePush(): Promise<void> {
   await sub.unsubscribe().catch(() => undefined);
 }
 
+/**
+ * Closes every alert notification this app has on the phone's lock screen and
+ * in Notification Centre. Called when the Alerts tab is on screen: once the
+ * list has been seen, the notifications that pointed at it have done their job.
+ */
+export async function clearNotifications(): Promise<number> {
+  if (!('serviceWorker' in navigator)) return 0;
+  try {
+    const reg = await navigator.serviceWorker.getRegistration('/m/');
+    if (!reg?.getNotifications) return 0;
+    const shown = await reg.getNotifications();
+    for (const n of shown) n.close();
+    return shown.length;
+  } catch {
+    return 0;
+  }
+}
+
 /** Keeps the home-screen badge in step with what the app is showing. */
 export function setBadge(count: number): void {
   const nav = navigator as Navigator & { setAppBadge?: (n: number) => Promise<void>; clearAppBadge?: () => Promise<void> };

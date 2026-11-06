@@ -276,6 +276,9 @@ default), since a tag going quiet sends nothing to react to.
   check while it stays there (`alert_state`).
 - A tag flapping between moving and still notifies at most once every 6 h.
 - Several new alerts in one check go out as a single notification.
+- Opening the Alerts tab clears the app's notifications from the lock screen
+  and Notification Centre. Tapping a notification opens that tab, so it clears
+  them too. The home-screen badge keeps counting the alerts still active.
 
 Each phone's subscription (`push_subscriptions`) follows one organisation, the
 one chosen when notifications were turned on. It stops receiving alerts when
