@@ -3,6 +3,7 @@ import type { AuthUser, TagSnapshot } from '@tagexplore/core';
 import * as api from './api.js';
 import { AlertsView } from './components/AlertsView.js';
 import { InstallBanner } from './components/InstallBanner.js';
+import { LoadingScreen } from './components/LoadingScreen.js';
 import { LoginScreen } from './components/LoginScreen.js';
 import { MapTab } from './components/MapTab.js';
 import { OrgPicker } from './components/OrgPicker.js';
@@ -41,6 +42,7 @@ export function App(): JSX.Element {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [orgs, setOrgs] = useState<Array<{ id: string; name: string }>>([]);
+  const [orgsLoaded, setOrgsLoaded] = useState(false);
   const [orgId, setOrgId] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>('map');
   /** The tag whose card is open; `snap` is a past round's reading, `fromMap` hides "Show on map". */
@@ -70,7 +72,8 @@ export function App(): JSX.Element {
         const wanted = pendingLink.org ?? readStored(ORG_KEY);
         setOrgId(list.find((o) => o.id === wanted)?.id ?? list[0]?.id ?? null);
       })
-      .catch(() => setOrgs([]));
+      .catch(() => setOrgs([]))
+      .finally(() => setOrgsLoaded(true));
     // Only on login; a link arriving later is handled below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
@@ -141,10 +144,17 @@ export function App(): JSX.Element {
     setSettingsOpen(false);
     setUser(null);
     setOrgs([]);
+    setOrgsLoaded(false);
     setOrgId(null);
   }, []);
 
-  if (!authChecked) return <div className="splash" />;
+  // Until the organisation's own data is in, the loading screen covers the
+  // app: no empty count, no map zoomed out over the whole country. An error
+  // ends the wait too, so it can never get stuck in front of the message.
+  const loadingData = !!user && (!orgsLoaded || (orgId !== null && data.loadedOrgId !== orgId && !data.error));
+  const loadingOrgName = orgs.find((o) => o.id === orgId)?.name;
+
+  if (!authChecked) return <LoadingScreen active />;
   if (!user) return <LoginScreen onLoggedIn={setUser} />;
 
   return (
@@ -224,6 +234,7 @@ export function App(): JSX.Element {
           onLogout={logout}
         />
       )}
+      <LoadingScreen active={loadingData} label={loadingOrgName ? `Loading ${loadingOrgName}…` : undefined} />
     </div>
   );
 }
