@@ -8,6 +8,7 @@ import {
   type DevicePositionSource,
   type DeviceRow,
   type DiscoveryWindow,
+  geofenceCentroid,
   type GeofenceRegion,
   type GpsPoint,
   type LinkReading,
@@ -83,6 +84,8 @@ interface Props {
    *  both views, since a property boundary is useful context in either. */
   geofences: GeofenceRegion[];
   geofencesView: boolean;
+  /** Counted tags per geofence `regionId`, drawn as a grey bubble in each geofence's middle. Null hides the bubbles. */
+  geofenceCounts: Map<string, number> | null;
 }
 
 /**
@@ -239,6 +242,7 @@ export function MapView({
   orgPoints,
   geofences,
   geofencesView,
+  geofenceCounts,
   children,
 }: Props): JSX.Element {
   const container = useRef<HTMLDivElement | null>(null);
@@ -745,8 +749,22 @@ export function MapView({
       });
       polygon.bindTooltip(fence.name, { direction: 'center' });
       polygon.addTo(group);
+      const count = geofenceCounts?.get(fence.regionId);
+      const centre = count === undefined ? null : geofenceCentroid(fence.coordinates);
+      if (count !== undefined && centre) {
+        L.marker(centre, {
+          icon: L.divIcon({
+            className: 'geofence-count-wrap',
+            html: `<span class="geofence-count">${count}</span>`,
+            iconSize: [34, 34],
+            iconAnchor: [17, 17],
+          }),
+          interactive: false,
+          keyboard: false,
+        }).addTo(group);
+      }
     }
-  }, [geofences]);
+  }, [geofences, geofenceCounts]);
 
   // Draws every ruler: a dot at its start, and — once there's a second point,
   // whether that's the confirmed end or (for whichever one is still being

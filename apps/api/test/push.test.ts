@@ -195,6 +195,30 @@ describe('alert notifier', () => {
     expect(sent).toHaveLength(1);
   });
 
+  it('keeps a history of every alert episode, open while active and closed once it clears', async () => {
+    const n = notifier();
+    store.writeReadings([reading('AAAA', T0, 1)], []);
+    await n.checkOrg(ORG, T0);
+    expect(store.listAlertHistory(ORG, { status: 'active' })).toMatchObject([
+      { tagId: 'AAAA', kind: 'still', startedAt: T0, endedAt: null },
+    ]);
+    expect(store.listAlertHistory(ORG, { status: 'past' })).toEqual([]);
+
+    store.writeReadings([reading('AAAA', T0 + HOUR, 0)], []);
+    await n.checkOrg(ORG, T0 + HOUR);
+    expect(store.listAlertHistory(ORG, { status: 'active' })).toEqual([]);
+    expect(store.listAlertHistory(ORG, { status: 'past' })).toMatchObject([
+      { tagId: 'AAAA', kind: 'still', startedAt: T0, endedAt: T0 + HOUR },
+    ]);
+
+    // A second episode is its own row; the first stays in the past list.
+    store.writeReadings([reading('AAAA', T0 + 2 * HOUR, 1)], []);
+    await n.checkOrg(ORG, T0 + 2 * HOUR);
+    await n.checkOrg(ORG, T0 + 2 * HOUR + 60_000);
+    expect(store.listAlertHistory(ORG, { status: 'active' })).toMatchObject([{ tagId: 'AAAA', startedAt: T0 + 2 * HOUR }]);
+    expect(store.listAlertHistory(ORG)).toHaveLength(2);
+  });
+
   it('does not re-notify a tag flapping between moving and still inside the cooldown', async () => {
     const n = notifier();
     store.writeReadings([reading('AAAA', T0, 1)], []);

@@ -1,5 +1,6 @@
 import {
   ALERT_SNAPSHOT_WINDOW_HOURS,
+  alertStartedAt,
   computeTagAlerts,
   describeTagAlert,
   type TagAlert,
@@ -132,12 +133,20 @@ export function createAlertNotifier(deps: {
       const prev = prevByKey.get(`${alert.tagId}|${alert.kind}`);
       const entering = !prev || !prev.active;
       store.setAlertActive(orgId, alert.tagId, alert.kind, nowMs);
+      // Idempotent: also opens an episode for an alert that was already
+      // active before the history table existed.
+      store.recordAlertActive(orgId, alert.tagId, alert.kind, Math.min(alertStartedAt(alert), nowMs));
       if (entering && (prev?.lastNotifiedAt == null || nowMs - prev.lastNotifiedAt >= ALERT_RENOTIFY_COOLDOWN_MS)) {
         toNotify.push(alert);
       }
     }
     for (const prev of previous) {
       if (prev.active && !currentKeys.has(`${prev.tagId}|${prev.kind}`)) store.setAlertCleared(orgId, prev.tagId, prev.kind);
+    }
+    // Every open episode that is no longer an alert ends now — including any
+    // left open across a restart.
+    for (const open of store.listAlertHistory(orgId, { status: 'active', limit: 500 })) {
+      if (!currentKeys.has(`${open.tagId}|${open.kind}`)) store.recordAlertEnded(orgId, open.tagId, open.kind, nowMs);
     }
 
     if (toNotify.length === 0) return { alerts, notified: [], sent: 0 };

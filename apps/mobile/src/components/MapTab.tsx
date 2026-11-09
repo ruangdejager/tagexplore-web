@@ -3,7 +3,10 @@ import L from 'leaflet';
 import 'leaflet.heat';
 import 'leaflet/dist/leaflet.css';
 import {
+  allocateTagsToGeofences,
   checkedInTagIds,
+  geofenceCentroid,
+  geofenceTagCounts,
   type DeviceRow,
   type DiscoveryWindow,
   type GeofenceRegion,
@@ -166,6 +169,16 @@ export function MapTab(props: {
 
   const refNow = historyAt ?? now;
   const checkedIn = useMemo(() => checkedInTagIds(shown, windowChoice, refNow), [shown, windowChoice, refNow]);
+  const roundDevices = historyAt !== null ? (historyDevices ?? data.devices) : data.devices;
+
+  // Every shown tag lands in a geofence automatically (see
+  // `allocateTagsToGeofences`), and each geofence's bubble counts what the
+  // count block counts — same as the desktop.
+  const geofenceCounts = useMemo(() => {
+    if (!showGeofences || !geofences || geofences.length === 0) return null;
+    const allocations = allocateTagsToGeofences(shown, roundDevices, geofences, windowChoice, refNow);
+    return geofenceTagCounts(allocations, geofences, checkedIn);
+  }, [showGeofences, geofences, shown, roundDevices, windowChoice, refNow, checkedIn]);
 
   useEffect(() => {
     if (!el.current) return;
@@ -297,12 +310,26 @@ export function MapTab(props: {
         interactive: false,
         renderer: svgRenderer.current ?? undefined,
       }).addTo(group);
+      const count = geofenceCounts?.get(fence.regionId);
+      const centre = count === undefined ? null : geofenceCentroid(fence.coordinates);
+      if (count !== undefined && centre) {
+        L.marker(centre, {
+          icon: L.divIcon({
+            className: 'geofence-count-wrap',
+            html: `<span class="geofence-count">${count}</span>`,
+            iconSize: [34, 34],
+            iconAnchor: [17, 17],
+          }),
+          interactive: false,
+          keyboard: false,
+        }).addTo(group);
+      }
     }
     if (!m.hasLayer(group)) group.addTo(m);
     group.eachLayer((l) => {
-      (l as L.Polygon).bringToBack();
+      if (l instanceof L.Polygon) l.bringToBack();
     });
-  }, [showGeofences, geofences]);
+  }, [showGeofences, geofences, geofenceCounts]);
 
   // Link view: a faint line from each reader (or the tag a reading relayed
   // through) to the tag it heard in the latest round, with a ball pushed along

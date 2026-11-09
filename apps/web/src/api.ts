@@ -1,4 +1,5 @@
 import type {
+  AlertHistoryEntry,
   AuthUser,
   BatterySeries,
   DeviceIdentityCandidate,
@@ -193,6 +194,14 @@ export const fetchDevices = (orgId: string | null): Promise<{ devices: DeviceRow
 /** Same as `fetchDevices`, but each reader's position is as of `at` rather than live. */
 export const fetchDevicesAt = (orgId: string | null, at: number): Promise<{ devices: DeviceRow[] }> =>
   request(scoped('/api/devices', orgId, { at }));
+
+/** Recorded alert episodes: `active` still open, `past` cleared (newest cleared first). */
+export const fetchAlertHistory = (
+  orgId: string | null,
+  status: 'active' | 'past' | 'all',
+  limit = 100,
+  before?: number,
+): Promise<{ alerts: AlertHistoryEntry[] }> => request(scoped('/api/alert-history', orgId, { status, limit, before }));
 
 export const fetchGeofences = (orgId: string | null): Promise<{ geofences: GeofenceRegion[] }> =>
   request(scoped('/api/geofences', orgId));

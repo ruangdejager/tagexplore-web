@@ -43,6 +43,28 @@ export interface TagAlert {
 }
 
 /**
+ * One alert episode as the server recorded it: from when the tag entered the
+ * alert until it left it. `endedAt` is null while the alert is still active.
+ */
+export interface AlertHistoryEntry {
+  id: number;
+  tagId: string;
+  label: string | null;
+  kind: TagAlertKind;
+  startedAt: number;
+  endedAt: number | null;
+}
+
+/**
+ * When an alert actually began, as opposed to when a check first noticed it:
+ * the start of the still streak, or the moment the tag crossed the stale
+ * threshold.
+ */
+export function alertStartedAt(alert: TagAlert): number {
+  return alert.kind === 'still' ? (alert.stillSince ?? alert.lastSeenAt) : alert.lastSeenAt + STALE_ALERT_HOURS * 3_600_000;
+}
+
+/**
  * The newest fix at or after the tag went still, or null. A fix in the very
  * reading that first reported still counts: that is where the tag stopped.
  */

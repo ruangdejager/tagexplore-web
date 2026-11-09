@@ -301,6 +301,22 @@ export function createApi(deps: ApiDeps): Hono<Env> {
     });
   });
 
+  /**
+   * Alert episodes the server has recorded — `status=active` for the ones
+   * still open, `status=past` for the ones that have cleared (newest cleared
+   * first), `all` for both. `before` pages back.
+   */
+  api.get('/alert-history', (c) => {
+    const statusParam = c.req.query('status');
+    const status = statusParam === 'active' || statusParam === 'past' ? statusParam : 'all';
+    const limit = Number(c.req.query('limit') ?? 100);
+    const before = c.req.query('before') ? Number(c.req.query('before')) : undefined;
+    if (!Number.isFinite(limit) || (before !== undefined && !Number.isFinite(before))) {
+      return c.json({ error: '`limit` and `before` must be numbers.' }, 400);
+    }
+    return c.json({ alerts: deps.store.listAlertHistory(c.get('orgId'), { status, limit, before }) });
+  });
+
   /** Geofence boundaries for the org's readers — read off the events API, not the discovery logs. */
   api.get('/geofences', (c) => c.json({ geofences: deps.store.listGeofences(c.get('orgId')) }));
 

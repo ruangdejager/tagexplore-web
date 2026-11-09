@@ -198,7 +198,7 @@ export function App(): JSX.Element {
         )}
         {orgId && tab !== 'map' && (
           <div className="pane pane-list">
-            {tab === 'alerts' && <AlertsView data={data} onOpenTag={setOpenTag} />}
+            {tab === 'alerts' && <AlertsView orgId={orgId} data={data} onOpenTag={setOpenTag} />}
             {tab === 'tags' && <TagsView data={data} onOpenTag={setOpenTag} />}
           </div>
         )}

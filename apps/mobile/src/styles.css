@@ -1609,3 +1609,48 @@ input:focus {
     animation: none;
   }
 }
+
+/* Count of tags allocated to a geofence, centred in it. */
+.geofence-count-wrap {
+  background: none;
+  border: none;
+}
+.geofence-count {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: rgba(90, 94, 88, 0.92);
+  color: #fff;
+  font-weight: 700;
+  font-size: 14px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+
+/* Active / Past switch on the Alerts tab. */
+.segmented {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.segmented button {
+  flex: 1;
+  min-height: 38px;
+  border-radius: 9px;
+  color: var(--ink-dim);
+  font-weight: 600;
+  font-size: 15px;
+}
+.segmented button[data-on='1'] {
+  background: var(--panel-2);
+  color: var(--ink);
+}

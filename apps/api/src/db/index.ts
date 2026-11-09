@@ -12,6 +12,7 @@ import type {
   DiscoveryReadingDetail,
   DiscoveryRoundDetail,
   DiscoverySource,
+  AlertHistoryEntry,
   GeofenceRegion,
   GpsPoint,
   IdentitySource,
@@ -399,6 +400,22 @@ CREATE TABLE IF NOT EXISTS alert_state (
   last_notified_at  INTEGER,
   PRIMARY KEY (org_id, tag_id, kind)
 );
+
+-- Every alert episode, kept after it clears: one row from the moment a tag
+-- entered an alert until it left it. ended_at is NULL while the alert is still
+-- active. Written by the alert notifier, alongside alert_state, so the history
+-- is the same server-side judgement the push notifications come from.
+CREATE TABLE IF NOT EXISTS alert_history (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id      TEXT NOT NULL REFERENCES organisations(id) ON DELETE CASCADE,
+  tag_id      TEXT NOT NULL,
+  kind        TEXT NOT NULL,
+  started_at  INTEGER NOT NULL,
+  ended_at    INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS alert_history_org_ended ON alert_history(org_id, ended_at);
+CREATE INDEX IF NOT EXISTS alert_history_open ON alert_history(org_id, tag_id, kind) WHERE ended_at IS NULL;
 `;
 
 export interface UserRow {
@@ -2819,6 +2836,71 @@ export class Store {
     this.db
       .prepare('UPDATE alert_state SET last_notified_at = ? WHERE org_id = ? AND tag_id = ? AND kind = ?')
       .run(at, orgId, tagId, kind);
+  }
+
+  // --- Alert history (every episode, active and past) ----------------------
+
+  /**
+   * Records that an alert is active, having started at `startedAt`. A no-op
+   * while the same episode is still open. When the alert's own start has moved
+   * on (the tag recovered and went back into the same alert between two
+   * checks), the open episode is closed at the new start and a fresh one opened.
+   */
+  recordAlertActive(orgId: string, tagId: string, kind: string, startedAt: number): void {
+    const open = this.db
+      .prepare('SELECT id, started_at FROM alert_history WHERE org_id = ? AND tag_id = ? AND kind = ? AND ended_at IS NULL')
+      .get(orgId, tagId, kind) as { id: number; started_at: number } | undefined;
+    if (open && startedAt <= open.started_at) return;
+    if (open) this.db.prepare('UPDATE alert_history SET ended_at = ? WHERE id = ?').run(startedAt, open.id);
+    this.db
+      .prepare('INSERT INTO alert_history (org_id, tag_id, kind, started_at) VALUES (?, ?, ?, ?)')
+      .run(orgId, tagId, kind, startedAt);
+  }
+
+  /** Closes the open episode of an alert that has cleared. */
+  recordAlertEnded(orgId: string, tagId: string, kind: string, endedAt: number): void {
+    this.db
+      .prepare('UPDATE alert_history SET ended_at = ? WHERE org_id = ? AND tag_id = ? AND kind = ? AND ended_at IS NULL')
+      .run(endedAt, orgId, tagId, kind);
+  }
+
+  /**
+   * Alert episodes for the organisation, newest first. `status` picks the open
+   * ones, the closed ones (newest cleared first), or both; `before` pages back
+   * by that same ordering column.
+   */
+  listAlertHistory(
+    orgId: string,
+    opts: { status?: 'active' | 'past' | 'all'; limit?: number; before?: number } = {},
+  ): AlertHistoryEntry[] {
+    const status = opts.status ?? 'all';
+    const where = status === 'active' ? 'AND h.ended_at IS NULL' : status === 'past' ? 'AND h.ended_at IS NOT NULL' : '';
+    const col = status === 'past' ? 'h.ended_at' : 'h.started_at';
+    const rows = this.db
+      .prepare(
+        `SELECT h.id, h.tag_id, h.kind, h.started_at, h.ended_at, t.label
+           FROM alert_history h
+           LEFT JOIN org_tags t ON t.org_id = h.org_id AND t.tag_id = h.tag_id
+          WHERE h.org_id = ? ${where} AND ${col} < ?
+          ORDER BY ${col} DESC, h.id DESC
+          LIMIT ?`,
+      )
+      .all(orgId, opts.before ?? Number.MAX_SAFE_INTEGER, Math.max(1, Math.min(opts.limit ?? 100, 500))) as Array<{
+      id: number;
+      tag_id: string;
+      kind: string;
+      started_at: number;
+      ended_at: number | null;
+      label: string | null;
+    }>;
+    return rows.map((r) => ({
+      id: r.id,
+      tagId: r.tag_id,
+      label: r.label,
+      kind: r.kind as AlertHistoryEntry['kind'],
+      startedAt: r.started_at,
+      endedAt: r.ended_at,
+    }));
   }
 
   // --- Raw readings for the bot ---------------------------------------------

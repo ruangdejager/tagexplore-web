@@ -1,4 +1,5 @@
 import type {
+  AlertHistoryEntry,
   AuthUser,
   DeviceRow,
   DiscoveryCountPoint,
@@ -70,6 +71,9 @@ export const fetchDiscoveryDetail = (orgId: string, at: number): Promise<Discove
 /** Per-round unique-tag counts, newest first; `before` pages further back. */
 export const fetchDiscoveryCounts = (orgId: string, limit: number, before?: number): Promise<{ counts: DiscoveryCountPoint[] }> =>
   request(`/api/discovery-counts?${q(orgId, before === undefined ? { limit } : { limit, before })}`);
+/** Recorded alert episodes: `active` still open, `past` cleared (newest cleared first). */
+export const fetchAlertHistory = (orgId: string, status: 'active' | 'past' | 'all', limit = 100): Promise<{ alerts: AlertHistoryEntry[] }> =>
+  request(`/api/alert-history?${q(orgId, { status, limit })}`);
 export const fetchAlerts = (orgId: string): Promise<{ now: number; alerts: TagAlert[] }> =>
   request(`/api/push/alerts?${q(orgId)}`);
 

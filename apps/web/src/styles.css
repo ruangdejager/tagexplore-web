@@ -1661,3 +1661,72 @@ footer {
   color: var(--ink);
   opacity: 1;
 }
+
+/* Count of tags allocated to a geofence, centred in it. */
+.geofence-count-wrap {
+  background: none;
+  border: none;
+}
+.geofence-count {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: rgba(90, 94, 88, 0.92);
+  color: #fff;
+  font-weight: 700;
+  font-size: 14px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+
+/* Active / Past switch inside the expanded alerts card. */
+.alerts-tabs {
+  display: flex;
+  gap: 4px;
+  margin-top: 10px;
+}
+.alerts-tabs button {
+  flex: 1;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--ink-dim);
+  font-family: var(--display);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: 11px;
+  cursor: pointer;
+}
+.alerts-tabs button[data-on='1'] {
+  background: var(--panel-2);
+  color: var(--ink);
+  border-color: var(--ink-dim);
+}
+.alert-badge.alert-badge-quiet {
+  background: var(--ink-dim);
+}
+.alerts-empty {
+  padding: 8px 0;
+  font-size: 11.5px;
+}
+.alert-row.alert-row-past {
+  border-left-color: var(--ink-dim);
+  background: rgba(154, 160, 140, 0.08);
+}
+.alert-past-kind {
+  color: var(--ink-dim);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+.alert-past-when {
+  color: var(--ink-dim);
+  text-align: right;
+  white-space: nowrap;
+  font-size: 10.5px;
+}

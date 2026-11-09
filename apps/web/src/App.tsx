@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  allocateTagsToGeofences,
+  checkedInTagIds,
+  geofenceTagCounts,
   type DeviceRow,
   type DiscoveryWindow,
   type GeofenceRegion,
@@ -401,6 +404,15 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
     () => mapSourceSnapshots.filter((s) => !hiddenFromMap.has(s.tagId)),
     [mapSourceSnapshots, hiddenFromMap],
   );
+  // Every toggled-on tag lands in a geofence automatically (see
+  // `allocateTagsToGeofences`), and each geofence's bubble counts the tags the
+  // count panel itself counts — same set, same window, same round.
+  const geofenceCounts = useMemo(() => {
+    if (!geofencesView || geofences.length === 0) return null;
+    const refNow = historyAt ?? now;
+    const allocations = allocateTagsToGeofences(mapToggledSnapshots, mapSourceDevices, geofences, discoveryWindow, refNow);
+    return geofenceTagCounts(allocations, geofences, checkedInTagIds(mapToggledSnapshots, discoveryWindow, refNow));
+  }, [geofencesView, geofences, mapToggledSnapshots, mapSourceDevices, discoveryWindow, historyAt, now]);
   // What "Recentre" frames to on either map: every org tag's own position,
   // regardless of the list's toggles or search — unlike the global map's
   // "fit to shown", this is a fixed reference point, not a filtered one.
@@ -623,6 +635,7 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
         selectedDeviceImei={selectedDeviceImei}
         geofences={geofences}
         geofencesView={geofencesView}
+        geofenceCounts={geofenceCounts}
         colorMode={colorMode}
         gpsWindow={discoveryWindow}
         historyAt={historyAt}
@@ -653,6 +666,8 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
             tags={whitelist}
             now={now}
             onSelectTag={selectTag}
+            orgId={orgId}
+            liveNonce={live.dataNonce}
           />
           {selectedDevice && <DeviceCard device={selectedDevice} now={historyAt ?? now} onClose={() => setSelectedDeviceImei(null)} />}
           {selected && (
