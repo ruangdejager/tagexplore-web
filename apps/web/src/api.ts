@@ -1,5 +1,6 @@
 import type {
   AlertHistoryEntry,
+  SnapshotHistory,
   AuthUser,
   BatterySeries,
   DeviceIdentityCandidate,
@@ -135,6 +136,19 @@ export const fetchSnapshotsAt = (
     scoped('/api/snapshots', orgId, {
       to: at,
       from: Math.max(0, at - 364 * 86_400_000),
+      excludeDevices: excludeDeviceImeis?.length ? excludeDeviceImeis.join(',') : undefined,
+    }),
+  );
+
+/** Every tag's state `hours` ago plus every reading since — for browsing recent rounds without a request each (see `snapshotsAt`). */
+export const fetchSnapshotHistory = (
+  orgId: string | null,
+  hours: number,
+  excludeDeviceImeis?: string[],
+): Promise<SnapshotHistory> =>
+  request(
+    scoped('/api/snapshot-history', orgId, {
+      hours,
       excludeDevices: excludeDeviceImeis?.length ? excludeDeviceImeis.join(',') : undefined,
     }),
   );

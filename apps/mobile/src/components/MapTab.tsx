@@ -5,15 +5,13 @@ import 'leaflet/dist/leaflet.css';
 import {
   allocateTagsToGeofences,
   checkedInTagIds,
-  DISCOVERY_WINDOWS,
-  geofenceAreaSquareMeters,
-  geofenceLabelPoint,
+  snapshotsAt,
+  type SnapshotHistory,
   geofenceStats,
   GPS_FIX_COLOR,
   GPS_FIX_LEGEND,
   gpsFixBand,
   pointInGeofence,
-  type GeofenceStats,
   type DeviceRow,
   type DiscoveryWindow,
   type GeofenceRegion,
@@ -22,6 +20,7 @@ import {
   type TagSnapshot,
 } from '@tagexplore/core';
 import * as api from '../api.js';
+import { GeofenceBubbleLayer, bubbleSpec } from '../geofenceBubbles.js';
 import { usePref } from '../prefs.js';
 import type { OrgData } from '../useOrgData.js';
 import { CountBlock } from './CountBlock.js';
@@ -31,17 +30,8 @@ import { FunctionsBlock, HEATMAP_HOURS, NO_MAP_FUNCTIONS, normaliseMapFunctions,
 const GEOFENCE_DEFAULT_COLOR = '#E9AE2F';
 /** Tags outside the highlighted geofence. */
 const DIMMED_COLOR = '#5A5E58';
-const BUBBLE_SIZE = 38;
-
-/** A geofence's count bubble: grey, white number, a thick brim in the geofence's own colour. */
-function geofenceCountIcon(count: number, color: string): L.DivIcon {
-  return L.divIcon({
-    className: 'geofence-count-wrap',
-    html: `<span class="geofence-count" style="border-color:${color}">${count}</span>`,
-    iconSize: [BUBBLE_SIZE, BUBBLE_SIZE],
-    iconAnchor: [BUBBLE_SIZE / 2, BUBBLE_SIZE / 2],
-  });
-}
+/** How far back the count history's rounds are preloaded for instant browsing. */
+const HISTORY_PRELOAD_HOURS = 72;
 const SOUTH_AFRICA: [number, number] = [-28.8, 24.5];
 const FOCUS_ZOOM = 17;
 /** Same look as the desktop heatmap, so the two read the same density the same way. */
@@ -115,19 +105,44 @@ export function MapTab(props: {
   const [heatPoints, setHeatPoints] = useState<GpsPoint[] | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [legendOpen, setLegendOpen] = useState(false);
-  /** The geofence whose count bubble was tapped, for its info box. */
-  const [geofencePopup, setGeofencePopup] = useState<string | null>(null);
   /** The geofence in highlight view: only it is drawn, everything outside greys out. */
   const [highlightRegionId, setHighlightRegionId] = useState<string | null>(null);
-  const onBubble = useRef<(regionId: string) => void>(() => undefined);
-  onBubble.current = (regionId) => setGeofencePopup(regionId);
+  const bubbleLayer = useRef<GeofenceBubbleLayer | null>(null);
 
   useEffect(() => setNow(Date.now()), [data.updatedAt]);
   useEffect(() => {
     setHistoryAt(null);
     setHighlightRegionId(null);
-    setGeofencePopup(null);
   }, [orgId]);
+
+  // The last three days of rounds, loaded once this organisation's data is
+  // in, so tapping a recent round in the count history shows it straight away
+  // instead of waiting on a year-long query per tap. A round newer than the
+  // copy fetches a fresh one; an older one is still asked for on its own.
+  const [snapHistory, setSnapHistory] = useState<{ orgId: string; data: SnapshotHistory } | null>(null);
+  const snapHistoryCurrent = snapHistory?.orgId === orgId ? snapHistory.data : null;
+  const needsNewerHistory = historyAt !== null && snapHistoryCurrent !== null && historyAt > snapHistoryCurrent.to;
+  const orgLoaded = data.loadedOrgId === orgId;
+  useEffect(() => {
+    if (!orgLoaded) return;
+    if (snapHistoryCurrent && !needsNewerHistory) return;
+    let cancelled = false;
+    api
+      .fetchSnapshotHistory(orgId, HISTORY_PRELOAD_HOURS)
+      .then((res) => !cancelled && setSnapHistory({ orgId, data: res }))
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+    // `snapHistoryCurrent` is left out on purpose: its arrival must not refetch it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orgId, orgLoaded, needsNewerHistory]);
+  const historyLocal = useMemo(() => {
+    if (historyAt === null || !snapHistoryCurrent) return null;
+    if (historyAt <= snapHistoryCurrent.from || historyAt > snapHistoryCurrent.to) return null;
+    return snapshotsAt(snapHistoryCurrent, historyAt);
+  }, [historyAt, snapHistoryCurrent]);
+  const historyCovered = historyLocal !== null;
 
   useEffect(() => {
     if (historyAt === null) {
@@ -137,18 +152,20 @@ export function MapTab(props: {
       return;
     }
     let cancelled = false;
-    api
-      .fetchSnapshotsAt(orgId, historyAt)
-      .then((res) => {
-        if (cancelled) return;
-        setHistorySnaps(res.snapshots);
-        setHistoryLinks(res.links ?? []);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setHistorySnaps([]);
-        setHistoryLinks([]);
-      });
+    if (!historyCovered) {
+      api
+        .fetchSnapshotsAt(orgId, historyAt)
+        .then((res) => {
+          if (cancelled) return;
+          setHistorySnaps(res.snapshots);
+          setHistoryLinks(res.links ?? []);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setHistorySnaps([]);
+          setHistoryLinks([]);
+        });
+    }
     // The readers as they were for that round, so link lines start where the
     // reader actually was then.
     api
@@ -158,6 +175,9 @@ export function MapTab(props: {
     return () => {
       cancelled = true;
     };
+    // `historyCovered` only decides whether the snapshots are fetched; the
+    // readers are fetched either way, so it stays out of the dependencies.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orgId, historyAt]);
 
   // Geofences: fetched once per organisation, the first time they're switched on.
@@ -195,9 +215,9 @@ export function MapTab(props: {
 
   /** What the map and the count are showing: live, or the picked round. */
   const shown = useMemo<TagSnapshot[]>(() => {
-    if (historyAt !== null) return (historySnaps ?? []).filter((s) => !hidden.has(s.tagId));
+    if (historyAt !== null) return (historyLocal?.snapshots ?? historySnaps ?? []).filter((s) => !hidden.has(s.tagId));
     return data.watched.flatMap((r) => (r.snap ? [r.snap] : []));
-  }, [historyAt, historySnaps, hidden, data.watched]);
+  }, [historyAt, historyLocal, historySnaps, hidden, data.watched]);
 
   const refNow = historyAt ?? now;
   const checkedIn = useMemo(() => checkedInTagIds(shown, windowChoice, refNow), [shown, windowChoice, refNow]);
@@ -231,6 +251,15 @@ export function MapTab(props: {
     // top of a geofence's count bubble. The SVG pane only takes taps on its
     // own shapes, so a bubble is still tappable wherever no dot covers it.
     m.createPane('geofenceCounts').style.zIndex = '390';
+    // Tapping a bubble goes straight to that geofence's highlight view; the
+    // name label above it carries the way back out.
+    const bubbles = new GeofenceBubbleLayer(m, {
+      pane: 'geofenceCounts',
+      interactive: true,
+      onBubbleClick: (regionId) => setHighlightRegionId(regionId),
+      onExit: () => setHighlightRegionId(null),
+    });
+    bubbleLayer.current = bubbles;
     // Bottom to top: geofences, link lines, tag dots, readers.
     geofenceLayer.current = L.layerGroup();
     linkLayer.current = L.layerGroup();
@@ -242,6 +271,7 @@ export function MapTab(props: {
     ro.observe(el.current);
     return () => {
       ro.disconnect();
+      bubbles.destroy();
       heat.current = null;
       m.remove();
       map.current = null;
@@ -313,7 +343,7 @@ export function MapTab(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focus?.n]);
 
-  const shownLinks = historyAt !== null ? (historyLinks ?? []) : data.links;
+  const shownLinks = historyAt !== null ? (historyLocal?.links ?? historyLinks ?? []) : data.links;
   const shownDevices = historyAt !== null ? (historyDevices ?? data.devices) : data.devices;
 
   // Heatmap: replaces the tag dots, as on the desktop. Recreated rather than
@@ -357,18 +387,14 @@ export function MapTab(props: {
         interactive: false,
         renderer: svgRenderer.current ?? undefined,
       }).addTo(group);
-      const count = geofenceInfo?.get(fence.regionId)?.counted;
-      const centre = count === undefined ? null : geofenceLabelPoint(fence.coordinates);
-      if (count !== undefined && centre) {
-        L.marker(centre, {
-          icon: geofenceCountIcon(count, fence.color ?? GEOFENCE_DEFAULT_COLOR),
-          pane: 'geofenceCounts',
-          keyboard: false,
-        })
-          .on('click', () => onBubble.current(fence.regionId))
-          .addTo(group);
-      }
     }
+    const specs = (highlightFence ? [highlightFence] : geofences).flatMap((fence) => {
+      const count = geofenceInfo?.get(fence.regionId)?.counted;
+      if (count === undefined || fence.coordinates.length < 3) return [];
+      const spec = bubbleSpec(fence, count, fence.color ?? GEOFENCE_DEFAULT_COLOR);
+      return spec ? [spec] : [];
+    });
+    bubbleLayer.current?.set(group, specs, highlightFence?.regionId ?? null);
     if (!m.hasLayer(group)) group.addTo(m);
     group.eachLayer((l) => {
       if (l instanceof L.Polygon) l.bringToBack();
@@ -465,6 +491,24 @@ export function MapTab(props: {
 
   const withFix = shown.some((s) => s.lat !== null);
 
+  /**
+   * Frames the map again: the highlighted geofence while one is highlighted,
+   * otherwise every tag of the organisation that has a position.
+   */
+  const recentre = (): void => {
+    const m = map.current;
+    if (!m) return;
+    m.invalidateSize({ animate: false });
+    if (highlightFence) {
+      m.fitBounds(L.latLngBounds(highlightFence.coordinates), { padding: [50, 50], maxZoom: 17 });
+      return;
+    }
+    const points = data.rows.flatMap((r): Array<[number, number]> =>
+      r.snap?.lat != null && r.snap.lon != null ? [[r.snap.lat, r.snap.lon]] : [],
+    );
+    if (points.length) m.fitBounds(L.latLngBounds(points), { padding: [40, 40], maxZoom: 16 });
+  };
+
   return (
     <div className="map-wrap">
       <div ref={el} className="map" />
@@ -488,16 +532,9 @@ export function MapTab(props: {
       </div>
       {data.updatedAt !== null && !withFix && !fns.heatmap && <div className="map-note">No tag has a GPS fix to show.</div>}
 
-      {highlightFence && (
-        <div className="highlight-bar">
-          <span>
-            Highlighting <b>{highlightFence.name}</b>
-          </span>
-          <button type="button" onClick={() => setHighlightRegionId(null)}>
-            Exit highlight view
-          </button>
-        </div>
-      )}
+      <button type="button" className="recentre-button" onClick={recentre} aria-label="Recentre the map">
+        Recentre
+      </button>
 
       {!fns.heatmap && (
         <button type="button" className="legend-button" onClick={() => setLegendOpen((v) => !v)} aria-expanded={legendOpen}>
@@ -527,73 +564,6 @@ export function MapTab(props: {
         </div>
       )}
 
-      {geofencePopup !== null && (
-        <GeofencePopup
-          fence={geofences?.find((g) => g.regionId === geofencePopup) ?? null}
-          stats={geofenceInfo?.get(geofencePopup) ?? null}
-          readersInside={
-            shownDevices.filter((d) => {
-              const fence = geofences?.find((g) => g.regionId === geofencePopup);
-              return fence && d.lat !== null && d.lon !== null && pointInGeofence([d.lat, d.lon], fence.coordinates);
-            }).length
-          }
-          windowLabel={DISCOVERY_WINDOWS.find((w) => w.value === windowChoice)?.label ?? ''}
-          highlighted={highlightRegionId === geofencePopup}
-          onHighlight={(on) => {
-            setHighlightRegionId(on ? geofencePopup : null);
-            setGeofencePopup(null);
-          }}
-          onClose={() => setGeofencePopup(null)}
-        />
-      )}
-    </div>
-  );
-}
-
-
-/** The box a geofence's count bubble opens: its name, how its tags were placed, and highlight view. */
-function GeofencePopup(props: {
-  fence: GeofenceRegion | null;
-  stats: GeofenceStats | null;
-  readersInside: number;
-  windowLabel: string;
-  highlighted: boolean;
-  onHighlight: (on: boolean) => void;
-  onClose: () => void;
-}): JSX.Element | null {
-  const { fence, stats } = props;
-  if (!fence) return null;
-  const hectares = geofenceAreaSquareMeters(fence.coordinates) / 10_000;
-  const rows: Array<[string, string | number]> = [
-    [`Counted · ${props.windowLabel}`, stats?.counted ?? 0],
-    ['Tags placed here', stats?.placed ?? 0],
-    ['Inside the boundary', stats?.inside ?? 0],
-    ['Nearest geofence (just outside)', stats?.nearest ?? 0],
-    ['By tag GPS / by reader', `${stats?.byTagGps ?? 0} / ${stats?.byReader ?? 0}`],
-    ...((stats?.shared ?? 0) > 0 ? [['Also in an overlapping geofence', stats!.shared] as [string, number]] : []),
-    ['Readers inside', props.readersInside],
-    ['Area', `${hectares >= 100 ? Math.round(hectares).toLocaleString('en-ZA') : hectares.toFixed(1)} ha`],
-  ];
-  return (
-    <div className="map-popup geofence-popup" role="dialog" aria-label={fence.name}>
-      <div className="map-popup-head">
-        <i className="geofence-swatch" style={{ background: fence.color ?? GEOFENCE_DEFAULT_COLOR }} aria-hidden="true" />
-        <strong>{fence.name}</strong>
-        <button type="button" className="map-popup-x" aria-label="Close" onClick={props.onClose}>
-          ×
-        </button>
-      </div>
-      <dl className="map-popup-facts">
-        {rows.map(([k, v]) => (
-          <div key={k}>
-            <dt>{k}</dt>
-            <dd>{v}</dd>
-          </div>
-        ))}
-      </dl>
-      <button type="button" className="primary" onClick={() => props.onHighlight(!props.highlighted)}>
-        {props.highlighted ? 'Exit highlight view' : 'Highlight devices'}
-      </button>
     </div>
   );
 }

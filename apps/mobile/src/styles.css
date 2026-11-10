@@ -1673,31 +1673,6 @@ input:focus {
   line-height: 1;
   color: var(--ink-dim);
 }
-.geofence-swatch {
-  flex: none;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-}
-.map-popup-facts {
-  margin: 0 0 14px;
-}
-.map-popup-facts > div {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 5px 0;
-  border-top: 1px solid var(--line);
-  font-size: 15px;
-}
-.map-popup-facts dt {
-  color: var(--ink-dim);
-}
-.map-popup-facts dd {
-  margin: 0;
-  font-variant-numeric: tabular-nums;
-}
-
 /* The Legend button, bottom right above the tab dock. */
 .legend-button {
   position: absolute;
@@ -1757,37 +1732,42 @@ input:focus {
   background: transparent;
 }
 
-/* Highlight view: which geofence, and the way out. */
-.highlight-bar {
+/* Highlight view: the geofence's name above its bubble, with the way out. */
+.geofence-name-wrap {
+  background: none;
+  border: none;
+}
+.geofence-name {
   position: absolute;
-  z-index: 550;
-  left: 12px;
-  right: 120px;
-  bottom: var(--dock-space);
+  left: 0;
+  transform: translateX(-50%);
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 6px 6px 6px 12px;
-  border-radius: 12px;
-  background: rgba(18, 20, 15, 0.92);
-  border: 1px solid var(--warn);
-  font-size: 14px;
-}
-.highlight-bar span {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  gap: 8px;
+  padding: 4px 4px 4px 10px;
   white-space: nowrap;
-}
-.highlight-bar button {
-  flex: none;
-  padding: 7px 10px;
-  border-radius: 9px;
-  background: var(--panel-2);
-  font-size: 13px;
+  background: rgba(18, 20, 15, 0.92);
+  border: 2px solid #e9ae2f;
+  border-radius: 999px;
+  color: #fff;
   font-weight: 600;
+  font-size: 13px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
 }
+.geofence-name button {
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.geofence-name button:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+
 .device-marker-wrap.dimmed {
   opacity: 0.3;
   filter: grayscale(1);
@@ -1860,4 +1840,22 @@ input:focus {
 }
 .loading-slow p {
   margin: 0;
+}
+
+/* Recentre, top right of the map. */
+.recentre-button {
+  position: absolute;
+  z-index: 500;
+  top: 10px;
+  right: 10px;
+  padding: 8px 12px;
+  border-radius: 18px;
+  background: rgba(18, 20, 15, 0.88);
+  border: 1px solid var(--veld-lit);
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 600;
+}
+.recentre-button:active {
+  background: var(--panel-2);
 }

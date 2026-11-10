@@ -1,5 +1,6 @@
 import type {
   AlertHistoryEntry,
+  SnapshotHistory,
   AuthUser,
   DeviceRow,
   DiscoveryCountPoint,
@@ -73,6 +74,9 @@ export const fetchPositions = (orgId: string, hours: number): Promise<{ points: 
 /** Each tag's latest reading as of one past round — what the map shows while browsing count history. */
 export const fetchSnapshotsAt = (orgId: string, at: number): Promise<{ snapshots: TagSnapshot[]; links: LinkReading[] }> =>
   request(`/api/snapshots?${q(orgId, { to: at, from: Math.max(0, at - 364 * 86_400_000) })}`);
+/** Every tag's state `hours` ago plus every reading since — for browsing recent rounds without a request each (see `snapshotsAt`). */
+export const fetchSnapshotHistory = (orgId: string, hours: number): Promise<SnapshotHistory> =>
+  request(`/api/snapshot-history?${q(orgId, { hours })}`);
 /** Everything stored behind one round. The server only answers `dev` and `admin` accounts. */
 export const fetchDiscoveryDetail = (orgId: string, at: number): Promise<DiscoveryDetail> =>
   request(`/api/discovery-detail?${q(orgId, { at })}`);

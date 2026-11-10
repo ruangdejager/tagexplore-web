@@ -13,6 +13,7 @@ import type {
   DiscoveryRoundDetail,
   DiscoverySource,
   AlertHistoryEntry,
+  HistoryReading,
   GeofenceRegion,
   GpsPoint,
   IdentitySource,
@@ -2520,6 +2521,59 @@ export class Store {
       gpsAgeSeconds: r.gps_age_s,
       readingCount: r.reading_count,
       stillSince: r.still_since,
+    }));
+  }
+
+  /**
+   * Every raw reading of a whitelisted tag in the window, oldest first — what
+   * `snapshotsAt` in core rolls forward to show any past round in the browser.
+   * `from` is exclusive, `to` inclusive, to sit right after a `tagSnapshots`
+   * taken `to: from`.
+   */
+  historyReadings({ orgId, from, to }: ReadingWindow, excludeDeviceImeis?: string[]): HistoryReading[] {
+    const filter = excludeDeviceFilterClause(excludeDeviceImeis, 'r');
+    const rows = this.db
+      .prepare(
+        `SELECT r.bracket_at, r.device_imei, r.tag_id, r.battery_mv, r.rssi, r.hops, r.wave_count,
+                r.movement_state, r.lat, r.lon, r.has_gps, r.fw_patch, r.gps_age_s, r.link_id
+           FROM readings r
+           JOIN devices d ON d.imei = r.device_imei
+          WHERE d.org_id = :org AND r.bracket_at > :from AND r.bracket_at <= :to
+            AND EXISTS (SELECT 1 FROM org_tags t WHERE t.org_id = :org AND t.tag_id = r.tag_id)
+            ${filter.sql}
+          ORDER BY r.bracket_at ASC`,
+      )
+      .all({ org: orgId, from, to, ...filter.params }) as Array<{
+      bracket_at: number;
+      device_imei: string;
+      tag_id: string;
+      battery_mv: number | null;
+      rssi: number | null;
+      hops: number | null;
+      wave_count: number | null;
+      movement_state: number | null;
+      lat: number | null;
+      lon: number | null;
+      has_gps: number;
+      fw_patch: number | null;
+      gps_age_s: number | null;
+      link_id: string | null;
+    }>;
+    return rows.map((r) => ({
+      bracketAt: r.bracket_at,
+      deviceImei: r.device_imei,
+      tagId: r.tag_id,
+      batteryMv: r.battery_mv,
+      rssi: r.rssi,
+      hops: r.hops,
+      waveCount: r.wave_count,
+      movementState: r.movement_state,
+      lat: r.lat,
+      lon: r.lon,
+      hasGps: toBool(r.has_gps),
+      fwVersionPatch: r.fw_patch,
+      gpsAgeSeconds: r.gps_age_s,
+      linkId: r.link_id,
     }));
   }
 

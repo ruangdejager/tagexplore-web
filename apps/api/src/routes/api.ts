@@ -196,6 +196,28 @@ export function createApi(deps: ApiDeps): Hono<Env> {
     return c.json(body);
   });
 
+  /**
+   * What browsing recent count-history rounds needs, in one go: every tag's
+   * state as of `hours` ago, plus every reading since. The apps roll that
+   * forward to any round in between (`snapshotsAt` in core) instead of asking
+   * for a year-long snapshot per click.
+   */
+  api.get('/snapshot-history', (c) => {
+    const query = c.req.query();
+    const hours = Number(query['hours'] ?? 72);
+    if (!Number.isFinite(hours) || hours <= 0 || hours > 24 * 7) return c.json({ error: '`hours` must be between 0 and 168.' }, 400);
+    const orgId = c.get('orgId');
+    const excludeDeviceImeis = parseExcludeDeviceImeis(query);
+    const now = Date.now();
+    const from = now - hours * 3_600_000;
+    // A round's bracket can be rounded a little into the future.
+    const to = now + 3_600_000;
+    const base = deps.store.tagSnapshots({ orgId, from: from - 364 * 86_400_000, to: from }, excludeDeviceImeis);
+    const readings = deps.store.historyReadings({ orgId, from, to }, excludeDeviceImeis);
+    const labels = Object.fromEntries(deps.store.listOrgTags(orgId).map((t) => [t.tagId, t.label]));
+    return c.json({ from, to: now, base, readings, labels });
+  });
+
   /** Raw GPS fixes in the window, for the density heatmap — not collapsed to one-per-tag like `/snapshots`. */
   api.get('/positions', (c) => {
     const window = readWindow(c.req.query(), Date.now());

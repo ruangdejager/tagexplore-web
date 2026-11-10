@@ -2,17 +2,21 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   allocateTagsToGeofences,
   checkedInTagIds,
-  DISCOVERY_WINDOWS,
   geofenceStats,
+  snapshotsAt,
   type DeviceRow,
   type DiscoveryWindow,
   type GeofenceRegion,
   type LinkReading,
   type OrgTagRow,
   type OrganisationRow,
+  type SnapshotHistory,
   type TagSnapshot,
 } from '@tagexplore/core';
 import * as api from './api.js';
+
+/** How far back the count history's rounds are preloaded for instant browsing. */
+const HISTORY_PRELOAD_HOURS = 72;
 import { AdminPanel } from './components/AdminPanel.js';
 import { AlertsPanel } from './components/AlertsPanel.js';
 import { BatteryTrends } from './components/BatteryTrends.js';
@@ -150,6 +154,22 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
     [hiddenDeviceImeis],
   );
 
+  // The last three days of rounds, loaded once after the first paint (the
+  // effect further down), so clicking a recent round in the count history
+  // shows it straight away instead of waiting on a year-long snapshot query
+  // per click. A round newer than the copy fetches a fresh one; one older than
+  // three days still asks the server for that round on its own.
+  const [snapHistory, setSnapHistory] = useState<{ key: string; data: SnapshotHistory } | null>(null);
+  const snapHistoryKey = `${orgId ?? ''}|${excludeDeviceImeis?.join(',') ?? ''}`;
+  const snapHistoryCurrent = snapHistory?.key === snapHistoryKey ? snapHistory.data : null;
+  const needsNewerHistory = historyAt !== null && snapHistoryCurrent !== null && historyAt > snapHistoryCurrent.to;
+  const historyLocal = useMemo(() => {
+    if (historyAt === null || !snapHistoryCurrent) return null;
+    if (historyAt <= snapHistoryCurrent.from || historyAt > snapHistoryCurrent.to) return null;
+    return snapshotsAt(snapHistoryCurrent, historyAt);
+  }, [historyAt, snapHistoryCurrent]);
+  const historyCovered = historyLocal !== null;
+
   // Tags are never time-filtered — every whitelisted tag always shows its
   // latest known state, so the fetch window here is just a generous ceiling,
   // not a user-facing setting. The heatmap gets its own window below.
@@ -182,9 +202,10 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   }, [orgId]);
 
   // Fetches the whitelist's state as of the picked round — same shape as the
-  // live snapshots, so the map can show it through the very same prop.
+  // live snapshots, so the map can show it through the very same prop. Only
+  // for a round the preloaded last three days don't cover (see `historyLocal`).
   useEffect(() => {
-    if (historyAt === null || !orgId) {
+    if (historyAt === null || !orgId || historyCovered) {
       setHistorySnapshots(null);
       setHistoryLinks(null);
       return;
@@ -207,7 +228,7 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
     return () => {
       cancelled = true;
     };
-  }, [historyAt, orgId, excludeDeviceImeis]);
+  }, [historyAt, orgId, excludeDeviceImeis, historyCovered]);
 
   // Same idea for the readers themselves — the purple marker for a past round
   // belongs at wherever that reader actually was then, not its live position.
@@ -340,6 +361,24 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
       .catch(() => {});
   }, [prefsLoaded, colorMode, orgId, geofencesView, hiddenDeviceImeis]);
 
+  // Loads `snapHistory` once the first paint is done (see its declaration).
+  useEffect(() => {
+    if (!orgId || !dataReady) return;
+    if (snapHistoryCurrent && !needsNewerHistory) return;
+    let cancelled = false;
+    api
+      .fetchSnapshotHistory(orgId, HISTORY_PRELOAD_HOURS, excludeDeviceImeis)
+      .then((data) => {
+        if (!cancelled) setSnapHistory({ key: snapHistoryKey, data });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+    // `snapHistoryCurrent` is left out on purpose: its arrival must not refetch it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orgId, dataReady, snapHistoryKey, needsNewerHistory]);
+
   // Every tag starts toggled on in the battery trend, once per organisation —
   // not on every whitelist refetch, so a deliberate "None" or a manual toggle
   // isn't quietly overwritten a minute later.
@@ -367,8 +406,9 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   // shape, same search/hide filters, just a different source array. This is
   // the only thing that changes when browsing history; the map's own pan and
   // zoom are never touched by it (see MapView's markers effect).
-  const mapSourceSnapshots = historyAt !== null && historySnapshots !== null ? historySnapshots : snapshots;
-  const mapSourceLinks = historyAt !== null && historyLinks !== null ? historyLinks : links;
+  const mapSourceSnapshots =
+    historyAt !== null ? (historyLocal?.snapshots ?? historySnapshots ?? snapshots) : snapshots;
+  const mapSourceLinks = historyAt !== null ? (historyLocal?.links ?? historyLinks ?? links) : links;
   // Devices come back unfiltered (the list shows every reader dimmed, not
   // hidden) — the map, unlike the list, has to actually drop the marker for
   // one switched off, same as it drops that reader's tags.
@@ -645,7 +685,6 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
         geofenceStats={geofenceInfo}
         highlightRegionId={activeHighlight}
         onHighlightChange={setHighlightRegionId}
-        windowLabel={DISCOVERY_WINDOWS.find((w) => w.value === discoveryWindow)?.label ?? ''}
         colorMode={colorMode}
         gpsWindow={discoveryWindow}
         historyAt={historyAt}

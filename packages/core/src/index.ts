@@ -8,5 +8,6 @@ export * from './domain/discoveryWindow.js';
 export * from './domain/geofence.js';
 export * from './domain/positionAge.js';
 export * from './domain/schedule.js';
+export * from './domain/snapshotHistory.js';
 export * from './domain/tagId.js';
 export * from './apiTypes.js';

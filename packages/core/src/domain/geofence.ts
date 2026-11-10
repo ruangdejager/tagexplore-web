@@ -134,18 +134,23 @@ export function geofenceCentroid(coordinates: LatLon[]): LatLon | null {
 }
 
 /**
- * Where a geofence's count bubble goes: the centroid when that is inside the
- * shape, otherwise a point guaranteed inside it — the middle of the widest
- * stretch of the shape along a few horizontal lines through it. A C- or
- * L-shaped geofence has its centroid outside; this pulls the bubble back in.
+ * Where a geofence's count bubble goes: the point inside the shape that is
+ * furthest from its edges, so the bubble has the most room. For an ordinary
+ * shape that is the centroid. A C- or L-shaped geofence has its centroid in
+ * the notch, outside the shape, or hard against an edge; then the bubble goes
+ * in the middle of the shape's widest part instead.
+ *
+ * Candidates are the centroid (when inside) and the middle of every stretch
+ * of the shape along a set of horizontal lines; the one furthest from any
+ * edge wins, and the one nearer the centroid where two are about as good.
  */
 export function geofenceLabelPoint(coordinates: LatLon[]): LatLon | null {
   const centroid = geofenceCentroid(coordinates);
-  if (!centroid || coordinates.length < 3 || pointInGeofence(centroid, coordinates)) return centroid;
+  if (!centroid || coordinates.length < 3) return centroid;
+  const candidates: LatLon[] = pointInGeofence(centroid, coordinates) ? [centroid] : [];
   const lats = coordinates.map((c) => c[0]);
   const minLat = Math.min(...lats);
   const maxLat = Math.max(...lats);
-  let best: { point: LatLon; width: number } | null = null;
   const STEPS = 24;
   for (let k = 0; k < STEPS; k++) {
     // Half-steps, so a scan line never runs exactly along a horizontal edge.
@@ -157,13 +162,16 @@ export function geofenceLabelPoint(coordinates: LatLon[]): LatLon | null {
       if (yi > lat !== yj > lat) xs.push(xi + ((lat - yi) * (xj - xi)) / (yj - yi));
     }
     xs.sort((a, b) => a - b);
-    for (let m = 0; m + 1 < xs.length; m += 2) {
-      const width = xs[m + 1]! - xs[m]!;
-      // Lines nearer the centroid's own latitude win ties, so the bubble stays
-      // as central as the shape allows.
-      const score = width / (1 + Math.abs(lat - centroid[0]) / (maxLat - minLat || 1));
-      if (!best || score > best.width) best = { point: [lat, (xs[m]! + xs[m + 1]!) / 2], width: score };
-    }
+    for (let m = 0; m + 1 < xs.length; m += 2) candidates.push([lat, (xs[m]! + xs[m + 1]!) / 2]);
+  }
+  let best: { point: LatLon; score: number } | null = null;
+  for (const point of candidates) {
+    const room = distanceToGeofenceEdge(point, coordinates);
+    // Up to 5% of the room is traded for being nearer the centroid, so a
+    // regular shape keeps its bubble in the middle.
+    const offCentre = Math.hypot(...project(centroid, point));
+    const score = room - 0.05 * offCentre;
+    if (!best || score > best.score) best = { point, score };
   }
   return best?.point ?? centroid;
 }

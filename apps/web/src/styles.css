@@ -1688,54 +1688,42 @@ footer {
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
 }
 
-/* The box a count bubble opens. */
-.geofence-info {
-  position: absolute;
-  z-index: 700;
-  width: 280px;
+/* Highlight view: the geofence's name above its bubble, with the way out. */
+.geofence-name-wrap {
+  background: none;
+  border: none;
 }
-.geofence-info-head {
+.geofence-name {
+  position: absolute;
+  left: 0;
+  transform: translateX(-50%);
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 10px;
-}
-.geofence-info-head i {
-  flex: none;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-}
-.geofence-info-head h3 {
-  font-size: 17px;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  padding: 4px 4px 4px 10px;
   white-space: nowrap;
+  background: rgba(18, 20, 15, 0.92);
+  border: 2px solid #e9ae2f;
+  border-radius: 999px;
+  color: #fff;
+  font-weight: 600;
+  font-size: 13px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
 }
-.geofence-info .card-actions .pill {
-  flex: 1;
+.geofence-name button {
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
 }
-.geofence-info dd {
-  white-space: nowrap;
+.geofence-name button:hover {
+  background: rgba(255, 255, 255, 0.24);
 }
 
-/* Highlight view: the bar that says which geofence and gets you out. */
-.highlight-bar {
-  position: absolute;
-  top: 14px;
-  right: 120px;
-  z-index: 650;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 10px 8px 14px;
-  background: rgba(27, 30, 23, 0.94);
-  border: 1px solid var(--warn);
-  border-radius: 3px;
-  font-size: 13px;
-  white-space: nowrap;
-}
 .device-marker-wrap.dimmed {
   opacity: 0.3;
   filter: grayscale(1);

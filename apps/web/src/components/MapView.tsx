@@ -9,8 +9,6 @@ import {
   type DevicePositionSource,
   type DeviceRow,
   type DiscoveryWindow,
-  geofenceAreaSquareMeters,
-  geofenceLabelPoint,
   pointInGeofence,
   type GeofenceRegion,
   type GeofenceStats,
@@ -20,6 +18,7 @@ import {
   type TagSnapshot,
 } from '@tagexplore/core';
 import * as api from '../api.js';
+import { GeofenceBubbleLayer, bubbleSpec } from '../geofenceBubbles.js';
 import { DEFAULT_ZOOM, SOUTH_AFRICA } from '../mapDefaults.js';
 import type { MainView } from './ViewPanel.js';
 
@@ -97,8 +96,6 @@ interface Props {
   /** The geofence in highlight view, or null. Only it is drawn, and everything outside it greys out. */
   highlightRegionId: string | null;
   onHighlightChange: (regionId: string | null) => void;
-  /** The count window's own label ("Last 6h"), for the geofence info box. */
-  windowLabel: string;
 }
 
 /**
@@ -160,83 +157,6 @@ const DEVICE_DOT_SIZE = 18;
 const GEOFENCE_DEFAULT_COLOR = '#E9AE2F';
 /** Tags and readers outside the highlighted geofence. */
 const DIMMED_COLOR = '#5A5E58';
-/** The count bubble's diameter, brim included. */
-const BUBBLE_SIZE = 38;
-
-/** A geofence's count bubble: grey, white number, a thick brim in the geofence's own colour. */
-function geofenceCountIcon(count: number, color: string): L.DivIcon {
-  return L.divIcon({
-    className: 'geofence-count-wrap',
-    html: `<span class="geofence-count" style="border-color:${color}">${count}</span>`,
-    iconSize: [BUBBLE_SIZE, BUBBLE_SIZE],
-    iconAnchor: [BUBBLE_SIZE / 2, BUBBLE_SIZE / 2],
-  });
-}
-
-/** The box a geofence's count bubble opens: its name, how its tags were placed, and highlight view. */
-function GeofenceInfoBox({
-  fence,
-  stats,
-  readersInside,
-  windowLabel,
-  position,
-  highlighted,
-  onHighlight,
-  onClose,
-}: {
-  fence: GeofenceRegion | null;
-  stats: GeofenceStats | null;
-  readersInside: number;
-  windowLabel: string;
-  position: { x: number; y: number };
-  highlighted: boolean;
-  onHighlight: (on: boolean) => void;
-  onClose: () => void;
-}): JSX.Element | null {
-  if (!fence) return null;
-  const hectares = geofenceAreaSquareMeters(fence.coordinates) / 10_000;
-  return (
-    <div className="card geofence-info" style={{ left: position.x + 16, top: Math.max(8, position.y - 20) }}>
-      <div className="geofence-info-head">
-        <i style={{ background: fence.color ?? GEOFENCE_DEFAULT_COLOR }} aria-hidden="true" />
-        <h3>{fence.name}</h3>
-        <button type="button" className="card-close" aria-label="Close" onClick={onClose}>
-          ×
-        </button>
-      </div>
-      <dl>
-        <dt>Counted · {windowLabel}</dt>
-        <dd>{stats?.counted ?? 0}</dd>
-        <dt>Tags placed here</dt>
-        <dd>{stats?.placed ?? 0}</dd>
-        <dt>Inside the boundary</dt>
-        <dd>{stats?.inside ?? 0}</dd>
-        <dt>Nearest geofence (just outside)</dt>
-        <dd>{stats?.nearest ?? 0}</dd>
-        <dt>By tag GPS / by reader</dt>
-        <dd>
-          {stats?.byTagGps ?? 0} / {stats?.byReader ?? 0}
-        </dd>
-        {(stats?.shared ?? 0) > 0 && (
-          <>
-            <dt>Also in an overlapping geofence</dt>
-            <dd>{stats!.shared}</dd>
-          </>
-        )}
-        <dt>Readers inside</dt>
-        <dd>{readersInside}</dd>
-        <dt>Area</dt>
-        <dd>{hectares >= 100 ? Math.round(hectares).toLocaleString('en-ZA') : hectares.toFixed(1)} ha</dd>
-      </dl>
-      <div className="card-actions">
-        <button type="button" className="pill" onClick={() => onHighlight(!highlighted)}>
-          {highlighted ? 'Exit highlight view' : 'Highlight devices'}
-        </button>
-      </div>
-    </div>
-  );
-}
-
 /**
  * The reader's marker. `positionSource` decides how it reads: `'own'` is the
  * live purple landmark, `'linked-tag'` keeps the colour but goes dashed
@@ -339,7 +259,6 @@ export function MapView({
   geofenceStats: geofenceStatsMap,
   highlightRegionId,
   onHighlightChange,
-  windowLabel,
   children,
 }: Props): JSX.Element {
   const container = useRef<HTMLDivElement | null>(null);
@@ -361,15 +280,17 @@ export function MapView({
   // Its own SVG renderer, same reasoning as the link lines below: cheap
   // insurance against churning the map's shared canvas renderer.
   const geofenceRenderer = useRef<L.SVG | null>(null);
-  // Where each geofence's count bubble sits. The bubbles live in a pane under
-  // the tag markers' canvas so a tag is always drawn on top of them — which
-  // also means the canvas swallows their clicks, so the map's own click
-  // handler hit-tests these positions instead.
-  const bubbles = useRef<Array<{ regionId: string; latlng: L.LatLng }>>([]);
+  // The geofences' count bubbles. They live in a pane under the tag markers'
+  // canvas so a tag is always drawn on top of them — which also means the
+  // canvas swallows their clicks, so the map's own click handler hit-tests
+  // them instead.
+  const bubbleLayer = useRef<GeofenceBubbleLayer | null>(null);
+  // Read from Leaflet handlers attached once, so they always call the latest one.
+  const onHighlightRef = useRef(onHighlightChange);
+  onHighlightRef.current = onHighlightChange;
   // The DOM event of the last click a tag or reader marker handled, so the
-  // map-level click that follows it doesn't also open a bubble underneath.
+  // map-level click that follows it doesn't also hit a bubble underneath.
   const layerClick = useRef<Event | null>(null);
-  const [geofencePopup, setGeofencePopup] = useState<{ regionId: string; x: number; y: number } | null>(null);
   // Link lines get their own SVG renderer rather than sharing the map's
   // default canvas one that the tag markers use — the link layer is cleared
   // and rebuilt on its own schedule (every toggle, every snapshot refresh),
@@ -501,6 +422,13 @@ export function MapView({
     const bubblePane = instance.createPane('geofenceCounts');
     bubblePane.style.zIndex = '390';
     bubblePane.style.pointerEvents = 'none';
+    const bubbles = new GeofenceBubbleLayer(instance, {
+      pane: 'geofenceCounts',
+      interactive: false,
+      onBubbleClick: (regionId) => onHighlightRef.current(regionId),
+      onExit: () => onHighlightRef.current(null),
+    });
+    bubbleLayer.current = bubbles;
     // heat.current and links.current are created lazily — see their own effects below.
 
     // Right-click opens a one-item menu ("Measure distance") at the cursor;
@@ -519,12 +447,6 @@ export function MapView({
       }
       setCtxMenu({ x: e.containerPoint.x, y: e.containerPoint.y, latlng: e.latlng });
     });
-    const bubbleAt = (point: L.Point): string | null => {
-      for (const b of bubbles.current) {
-        if (instance.latLngToContainerPoint(b.latlng).distanceTo(point) <= BUBBLE_SIZE / 2 + 2) return b.regionId;
-      }
-      return null;
-    };
     instance.on('click', (e: L.LeafletMouseEvent) => {
       setCtxMenu(null);
       if (measuringIdRef.current) {
@@ -532,15 +454,16 @@ export function MapView({
         return;
       }
       if (layerClick.current === e.originalEvent) return;
-      const regionId = bubbleAt(e.containerPoint);
-      setGeofencePopup(regionId ? { regionId, x: e.containerPoint.x, y: e.containerPoint.y } : null);
+      // A click on a count bubble goes straight to that geofence's highlight view.
+      const regionId = bubbles.hit(e.containerPoint);
+      if (regionId) onHighlightRef.current(regionId);
     });
     instance.on('mousemove', (e: L.LeafletMouseEvent) => {
       if (measuringIdRef.current) setRulerHover(e.latlng);
       // The bubbles can't take pointer events themselves (see above), so the
       // pointer cursor over one is set here.
       const container = instance.getContainer();
-      const over = bubbles.current.length > 0 && bubbleAt(e.containerPoint) !== null;
+      const over = bubbles.count > 0 && bubbles.hit(e.containerPoint) !== null;
       if (over !== (container.dataset['overBubble'] === '1')) {
         container.dataset['overBubble'] = over ? '1' : '0';
         container.style.cursor = over ? 'pointer' : '';
@@ -558,6 +481,7 @@ export function MapView({
     return () => {
       clearTimeout(settle);
       window.removeEventListener('resize', onResize);
+      bubbles.destroy();
       instance.remove();
       map.current = null;
     };
@@ -887,7 +811,6 @@ export function MapView({
     const group = geofenceLayer.current;
     if (!group) return;
     group.clearLayers();
-    bubbles.current = [];
     // Highlight view shows its own geofence and nothing else.
     const shownFences = highlightRegionId !== null ? geofences.filter((g) => g.regionId === highlightRegionId) : geofences;
     for (const fence of shownFences) {
@@ -901,19 +824,14 @@ export function MapView({
       });
       polygon.bindTooltip(fence.name, { direction: 'center' });
       polygon.addTo(group);
-      const count = geofenceStatsMap?.get(fence.regionId)?.counted;
-      const centre = count === undefined ? null : geofenceLabelPoint(fence.coordinates);
-      if (count !== undefined && centre) {
-        const latlng = L.latLng(centre[0], centre[1]);
-        L.marker(latlng, {
-          icon: geofenceCountIcon(count, fence.color ?? GEOFENCE_DEFAULT_COLOR),
-          pane: 'geofenceCounts',
-          interactive: false,
-          keyboard: false,
-        }).addTo(group);
-        bubbles.current.push({ regionId: fence.regionId, latlng });
-      }
     }
+    const specs = shownFences.flatMap((fence) => {
+      const count = geofenceStatsMap?.get(fence.regionId)?.counted;
+      if (count === undefined || fence.coordinates.length < 3) return [];
+      const spec = bubbleSpec(fence, count, fence.color ?? GEOFENCE_DEFAULT_COLOR);
+      return spec ? [spec] : [];
+    });
+    bubbleLayer.current?.set(group, specs, highlightRegionId);
   }, [geofences, geofenceStatsMap, highlightRegionId]);
 
   // Draws every ruler: a dot at its start, and — once there's a second point,
@@ -1161,42 +1079,6 @@ export function MapView({
           Recentre
         </button>
       </div>
-
-      {highlightRegionId !== null && (
-        <div className="highlight-bar">
-          <span>
-            Highlighting <b>{geofences.find((g) => g.regionId === highlightRegionId)?.name ?? 'geofence'}</b>
-          </span>
-          <button type="button" className="pill" onClick={() => onHighlightChange(null)}>
-            Exit highlight view
-          </button>
-        </div>
-      )}
-
-      {geofencePopup && (
-        <GeofenceInfoBox
-          fence={geofences.find((g) => g.regionId === geofencePopup.regionId) ?? null}
-          stats={geofenceStatsMap?.get(geofencePopup.regionId) ?? null}
-          readersInside={
-            devices.filter((d) => {
-              const fence = geofences.find((g) => g.regionId === geofencePopup.regionId);
-              return fence && d.lat !== null && d.lon !== null && pointInGeofence([d.lat, d.lon], fence.coordinates);
-            }).length
-          }
-          windowLabel={windowLabel}
-          // Kept on screen: it opens to the right of the click unless that would run off the edge.
-          position={{
-            x: Math.min(geofencePopup.x, (container.current?.clientWidth ?? Infinity) - 312),
-            y: Math.min(geofencePopup.y, (container.current?.clientHeight ?? Infinity) - 330),
-          }}
-          highlighted={highlightRegionId === geofencePopup.regionId}
-          onHighlight={(on) => {
-            onHighlightChange(on ? geofencePopup.regionId : null);
-            setGeofencePopup(null);
-          }}
-          onClose={() => setGeofencePopup(null)}
-        />
-      )}
 
       {ctxMenu && (
         <div className="ruler-menu" style={{ left: ctxMenu.x, top: ctxMenu.y }}>
