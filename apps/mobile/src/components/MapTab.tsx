@@ -40,6 +40,9 @@ const LINK_COLOR = '#4FBF8B';
 /** One push of the ball along a link line, origin to tag, as on the desktop. */
 const LINK_PERIOD_MS = 2000;
 
+/** Which geofences are drawn: only those holding tags, or all of them. */
+export type GeofenceMode = 'smart' | 'all';
+
 function deviceIcon(source: DeviceRow['positionSource'], dimmed = false): L.DivIcon {
   const variant = source === 'stale' ? ' stale' : source === 'linked-tag' ? ' via-tag' : '';
   return L.divIcon({
@@ -73,6 +76,8 @@ export function MapTab(props: {
   showFunctions: boolean;
   /** The organisation's geofences, switched on in Settings. Independent of Map functions. */
   showGeofences: boolean;
+  /** `smart` draws only the geofences that have tags placed in them. */
+  geofenceMode: GeofenceMode;
   /** Only for `dev` and `admin` accounts: opens a history round's raw data. */
   onShowRaw?: ((bracketAt: number) => void) | undefined;
 }): JSX.Element {
@@ -108,6 +113,23 @@ export function MapTab(props: {
   /** The geofence in highlight view: only it is drawn, everything outside greys out. */
   const [highlightRegionId, setHighlightRegionId] = useState<string | null>(null);
   const bubbleLayer = useRef<GeofenceBubbleLayer | null>(null);
+  const legendRef = useRef<HTMLDivElement | null>(null);
+  const legendButtonRef = useRef<HTMLButtonElement | null>(null);
+
+  // An open legend closes on a tap anywhere else (the button toggles it itself).
+  useEffect(() => {
+    if (!legendOpen) return;
+    const onDown = (e: PointerEvent): void => {
+      const target = e.target as Node;
+      if (legendRef.current?.contains(target) || legendButtonRef.current?.contains(target)) return;
+      setLegendOpen(false);
+    };
+    document.addEventListener('pointerdown', onDown, true);
+    return () => document.removeEventListener('pointerdown', onDown, true);
+  }, [legendOpen]);
+  useEffect(() => {
+    if (!visible) setLegendOpen(false);
+  }, [visible]);
 
   useEffect(() => setNow(Date.now()), [data.updatedAt]);
   useEffect(() => {
@@ -377,8 +399,14 @@ export function MapTab(props: {
       if (m.hasLayer(group)) m.removeLayer(group);
       return;
     }
-    // Highlight view shows its own geofence and nothing else.
-    for (const fence of highlightFence ? [highlightFence] : geofences) {
+    // Highlight view shows its own geofence and nothing else; smart mode only
+    // those with tags placed in them.
+    const fences = highlightFence
+      ? [highlightFence]
+      : props.geofenceMode === 'smart'
+        ? geofences.filter((g) => (geofenceInfo?.get(g.regionId)?.placed ?? 0) > 0)
+        : geofences;
+    for (const fence of fences) {
       if (fence.coordinates.length < 3) continue;
       L.polygon(fence.coordinates, {
         color: fence.color ?? GEOFENCE_DEFAULT_COLOR,
@@ -388,7 +416,7 @@ export function MapTab(props: {
         renderer: svgRenderer.current ?? undefined,
       }).addTo(group);
     }
-    const specs = (highlightFence ? [highlightFence] : geofences).flatMap((fence) => {
+    const specs = fences.flatMap((fence) => {
       const count = geofenceInfo?.get(fence.regionId)?.counted;
       if (count === undefined || fence.coordinates.length < 3) return [];
       const spec = bubbleSpec(fence, count, fence.color ?? GEOFENCE_DEFAULT_COLOR);
@@ -399,7 +427,7 @@ export function MapTab(props: {
     group.eachLayer((l) => {
       if (l instanceof L.Polygon) l.bringToBack();
     });
-  }, [showGeofences, geofences, geofenceInfo, highlightFence]);
+  }, [showGeofences, props.geofenceMode, geofences, geofenceInfo, highlightFence]);
 
   // Link view: a faint line from each reader (or the tag a reading relayed
   // through) to the tag it heard in the latest round, with a ball pushed along
@@ -537,12 +565,12 @@ export function MapTab(props: {
       </button>
 
       {!fns.heatmap && (
-        <button type="button" className="legend-button" onClick={() => setLegendOpen((v) => !v)} aria-expanded={legendOpen}>
+        <button ref={legendButtonRef} type="button" className="legend-button" onClick={() => setLegendOpen((v) => !v)} aria-expanded={legendOpen}>
           Legend <span className="legend-i">i</span>
         </button>
       )}
       {legendOpen && (
-        <div className="map-popup legend-popup" role="dialog" aria-label="Legend">
+        <div ref={legendRef} className="map-popup legend-popup" role="dialog" aria-label="Legend">
           <div className="map-popup-head">
             <strong>GPS fix</strong>
             <button type="button" className="map-popup-x" aria-label="Close" onClick={() => setLegendOpen(false)}>

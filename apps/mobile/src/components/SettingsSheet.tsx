@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { AuthUser } from '@tagexplore/core';
 import * as api from '../api.js';
 import { disablePush, enablePush, pushSupport, readPushState, type PushState } from '../push.js';
+import type { GeofenceMode } from './MapTab.js';
 import { Sheet } from './Sheet.js';
 
 export function SettingsSheet(props: {
@@ -14,6 +15,8 @@ export function SettingsSheet(props: {
   canUseFunctions: boolean;
   showGeofences: boolean;
   onShowGeofencesChange: (v: boolean) => void;
+  geofenceMode: GeofenceMode;
+  onGeofenceModeChange: (v: GeofenceMode) => void;
   onClose: () => void;
   onLogout: () => void;
 }): JSX.Element {
@@ -34,6 +37,27 @@ export function SettingsSheet(props: {
           checked={props.showGeofences}
           onChange={props.onShowGeofencesChange}
         />
+        {props.showGeofences && (
+          <div className="geofence-mode">
+            <div className="segmented" role="radiogroup" aria-label="Which geofences">
+              {(['smart', 'all'] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  role="radio"
+                  aria-checked={props.geofenceMode === mode}
+                  data-on={props.geofenceMode === mode ? '1' : '0'}
+                  onClick={() => props.onGeofenceModeChange(mode)}
+                >
+                  {mode === 'smart' ? 'Smart' : 'All'}
+                </button>
+              ))}
+            </div>
+            <small>
+              {props.geofenceMode === 'smart' ? 'Only geofences with tags in them' : 'Every geofence of the organisation'}
+            </small>
+          </div>
+        )}
         {props.canUseFunctions && (
           <button
             type="button"

@@ -6,7 +6,7 @@ import { InstallBanner } from './components/InstallBanner.js';
 import { LoadingScreen } from './components/LoadingScreen.js';
 import { RawDiscoverySheet } from './components/RawDiscoverySheet.js';
 import { LoginScreen } from './components/LoginScreen.js';
-import { MapTab } from './components/MapTab.js';
+import { MapTab, type GeofenceMode } from './components/MapTab.js';
 import { OrgPicker } from './components/OrgPicker.js';
 import { SettingsSheet } from './components/SettingsSheet.js';
 import { TagSheet } from './components/TagSheet.js';
@@ -55,6 +55,7 @@ export function App(): JSX.Element {
   // Off until switched on in settings.
   const [showFunctions, setShowFunctions] = usePref('tx-m-show-functions', false);
   const [showGeofences, setShowGeofences] = usePref('tx-m-show-geofences', false);
+  const [geofenceMode, setGeofenceMode] = usePref<GeofenceMode>('tx-m-geofence-mode', 'smart');
   const [pendingLink, setPendingLink] = useState(() => readLink(window.location.href));
 
   useEffect(() => {
@@ -192,6 +193,7 @@ export function App(): JSX.Element {
               onOpenTag={(tagId, snap) => setOpenTagState({ tagId, ...(snap ? { snap } : {}), fromMap: true })}
               showFunctions={isStaff && showFunctions}
               showGeofences={showGeofences}
+              geofenceMode={geofenceMode}
               onShowRaw={isStaff ? setRawAt : undefined}
             />
           </div>
@@ -238,6 +240,8 @@ export function App(): JSX.Element {
           canUseFunctions={isStaff}
           showGeofences={showGeofences}
           onShowGeofencesChange={setShowGeofences}
+          geofenceMode={geofenceMode}
+          onGeofenceModeChange={setGeofenceMode}
           onClose={() => setSettingsOpen(false)}
           onLogout={logout}
         />

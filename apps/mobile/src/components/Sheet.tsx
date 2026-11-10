@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 
 /** How far (px) the sheet has to be pulled before letting go closes it. */
 const CLOSE_DISTANCE = 110;
@@ -15,8 +16,23 @@ const OUT_MS = 200;
  * Touch events rather than pointer events: on iOS a vertical pan on scrollable
  * content is claimed by the browser's own scrolling and the pointer stream is
  * cancelled, whereas a non-passive `touchmove` can take it over.
+ *
+ * `aboveDock` keeps the tab dock visible and tappable over the sheet, with the
+ * sheet's content ending above it. Such a sheet is drawn into the shell rather
+ * than where it is used, so a scrolled list it opens from can't carry it off
+ * screen or clip it.
  */
-export function Sheet({ children, onClose, label }: { children: ReactNode; onClose: () => void; label: string }): JSX.Element {
+export function Sheet({
+  children,
+  onClose,
+  label,
+  aboveDock = false,
+}: {
+  children: ReactNode;
+  onClose: () => void;
+  label: string;
+  aboveDock?: boolean;
+}): JSX.Element {
   const sheet = useRef<HTMLElement | null>(null);
   const backdrop = useRef<HTMLButtonElement | null>(null);
   const closing = useRef(false);
@@ -127,8 +143,8 @@ export function Sheet({ children, onClose, label }: { children: ReactNode; onClo
     };
   }, [close]);
 
-  return (
-    <div className="sheet-layer">
+  const layer = (
+    <div className={`sheet-layer${aboveDock ? ' above-dock' : ''}`}>
       <button ref={backdrop} className="sheet-backdrop" aria-label="Close" onClick={close} />
       <section ref={sheet} className="sheet" role="dialog" aria-modal="true" aria-label={label}>
         <button className="sheet-handle" aria-label="Close" onClick={close} />
@@ -136,4 +152,6 @@ export function Sheet({ children, onClose, label }: { children: ReactNode; onClo
       </section>
     </div>
   );
+  const shell = aboveDock ? document.querySelector('.shell') : null;
+  return shell ? createPortal(layer, shell) : layer;
 }

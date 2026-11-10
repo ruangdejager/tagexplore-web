@@ -223,7 +223,7 @@ function ActiveAlertSheet(props: { row: TagRow; now: number; onShowOnMap: () => 
   if (mv !== null) rows.push(['Battery', `${(mv / 1000).toFixed(2)}V · ${BATTERY_LABEL[batteryLevel(mv)]}`]);
 
   return (
-    <Sheet onClose={props.onClose} label={`Alert for tag ${row.tagId}`}>
+    <Sheet aboveDock onClose={props.onClose} label={`Alert for tag ${row.tagId}`}>
       <SheetHead title={row.tagId} sub={row.label} badge={alert.kind === 'still' ? 'Still' : 'Not seen'} onClose={props.onClose} />
       <Facts rows={rows} />
       <div className="button-row">
@@ -252,7 +252,7 @@ function PastAlertSheet(props: { alert: AlertHistoryEntry; label: string | null;
     rows.push(['Position', <span className="mono">{`${alert.lat.toFixed(6)}, ${alert.lon.toFixed(6)}`}</span>]);
   }
   return (
-    <Sheet onClose={props.onClose} label={`Past alert for tag ${alert.tagId}`}>
+    <Sheet aboveDock onClose={props.onClose} label={`Past alert for tag ${alert.tagId}`}>
       <SheetHead title={alert.tagId} sub={props.label} onClose={props.onClose} />
       <Facts rows={rows} />
       <div className="button-row">
