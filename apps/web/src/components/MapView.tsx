@@ -1,15 +1,19 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import L from 'leaflet';
 import 'leaflet.heat';
 import {
   AGE_COLOR,
-  ageColor,
+  GPS_FIX_COLOR,
+  gpsFixBand,
   checkedInTagIds,
   type DevicePositionSource,
   type DeviceRow,
   type DiscoveryWindow,
-  geofenceCentroid,
+  geofenceAreaSquareMeters,
+  geofenceLabelPoint,
+  pointInGeofence,
   type GeofenceRegion,
+  type GeofenceStats,
   type GpsPoint,
   type LinkReading,
   type TagPosition,
@@ -84,8 +88,17 @@ interface Props {
    *  both views, since a property boundary is useful context in either. */
   geofences: GeofenceRegion[];
   geofencesView: boolean;
-  /** Counted tags per geofence `regionId`, drawn as a grey bubble in each geofence's middle. Null hides the bubbles. */
-  geofenceCounts: Map<string, number> | null;
+  /**
+   * Per geofence `regionId`: the tags placed in it and how. Its `counted` is
+   * the number in the grey bubble inside each geofence. Null when the org has
+   * no geofences.
+   */
+  geofenceStats: Map<string, GeofenceStats> | null;
+  /** The geofence in highlight view, or null. Only it is drawn, and everything outside it greys out. */
+  highlightRegionId: string | null;
+  onHighlightChange: (regionId: string | null) => void;
+  /** The count window's own label ("Last 6h"), for the geofence info box. */
+  windowLabel: string;
 }
 
 /**
@@ -143,6 +156,87 @@ const MOVEMENT_FRAME_INTERVAL_MS = 500;
 const DEVICE_ICON_SIZE = 26;
 const DEVICE_DOT_SIZE = 18;
 
+/** Outline colour for a geofence the feed sent without one. */
+const GEOFENCE_DEFAULT_COLOR = '#E9AE2F';
+/** Tags and readers outside the highlighted geofence. */
+const DIMMED_COLOR = '#5A5E58';
+/** The count bubble's diameter, brim included. */
+const BUBBLE_SIZE = 38;
+
+/** A geofence's count bubble: grey, white number, a thick brim in the geofence's own colour. */
+function geofenceCountIcon(count: number, color: string): L.DivIcon {
+  return L.divIcon({
+    className: 'geofence-count-wrap',
+    html: `<span class="geofence-count" style="border-color:${color}">${count}</span>`,
+    iconSize: [BUBBLE_SIZE, BUBBLE_SIZE],
+    iconAnchor: [BUBBLE_SIZE / 2, BUBBLE_SIZE / 2],
+  });
+}
+
+/** The box a geofence's count bubble opens: its name, how its tags were placed, and highlight view. */
+function GeofenceInfoBox({
+  fence,
+  stats,
+  readersInside,
+  windowLabel,
+  position,
+  highlighted,
+  onHighlight,
+  onClose,
+}: {
+  fence: GeofenceRegion | null;
+  stats: GeofenceStats | null;
+  readersInside: number;
+  windowLabel: string;
+  position: { x: number; y: number };
+  highlighted: boolean;
+  onHighlight: (on: boolean) => void;
+  onClose: () => void;
+}): JSX.Element | null {
+  if (!fence) return null;
+  const hectares = geofenceAreaSquareMeters(fence.coordinates) / 10_000;
+  return (
+    <div className="card geofence-info" style={{ left: position.x + 16, top: Math.max(8, position.y - 20) }}>
+      <div className="geofence-info-head">
+        <i style={{ background: fence.color ?? GEOFENCE_DEFAULT_COLOR }} aria-hidden="true" />
+        <h3>{fence.name}</h3>
+        <button type="button" className="card-close" aria-label="Close" onClick={onClose}>
+          ×
+        </button>
+      </div>
+      <dl>
+        <dt>Counted · {windowLabel}</dt>
+        <dd>{stats?.counted ?? 0}</dd>
+        <dt>Tags placed here</dt>
+        <dd>{stats?.placed ?? 0}</dd>
+        <dt>Inside the boundary</dt>
+        <dd>{stats?.inside ?? 0}</dd>
+        <dt>Nearest geofence (just outside)</dt>
+        <dd>{stats?.nearest ?? 0}</dd>
+        <dt>By tag GPS / by reader</dt>
+        <dd>
+          {stats?.byTagGps ?? 0} / {stats?.byReader ?? 0}
+        </dd>
+        {(stats?.shared ?? 0) > 0 && (
+          <>
+            <dt>Also in an overlapping geofence</dt>
+            <dd>{stats!.shared}</dd>
+          </>
+        )}
+        <dt>Readers inside</dt>
+        <dd>{readersInside}</dd>
+        <dt>Area</dt>
+        <dd>{hectares >= 100 ? Math.round(hectares).toLocaleString('en-ZA') : hectares.toFixed(1)} ha</dd>
+      </dl>
+      <div className="card-actions">
+        <button type="button" className="pill" onClick={() => onHighlight(!highlighted)}>
+          {highlighted ? 'Exit highlight view' : 'Highlight devices'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /**
  * The reader's marker. `positionSource` decides how it reads: `'own'` is the
  * live purple landmark, `'linked-tag'` keeps the colour but goes dashed
@@ -150,10 +244,10 @@ const DEVICE_DOT_SIZE = 18;
  * pinging — a landmark that stops pulsing says "not current" before the colour
  * has even registered.
  */
-function deviceIcon(positionSource: DevicePositionSource): L.DivIcon {
+function deviceIcon(positionSource: DevicePositionSource, dimmed = false): L.DivIcon {
   const variant = positionSource === 'stale' ? ' stale' : positionSource === 'linked-tag' ? ' via-tag' : '';
   return L.divIcon({
-    className: `device-marker-wrap${variant}`,
+    className: `device-marker-wrap${variant}${dimmed ? ' dimmed' : ''}`,
     html: '<span class="device-marker-ping"></span><span class="device-marker-dot"></span>',
     iconSize: [DEVICE_ICON_SIZE, DEVICE_ICON_SIZE],
     iconAnchor: [DEVICE_ICON_SIZE / 2, DEVICE_ICON_SIZE / 2],
@@ -242,11 +336,23 @@ export function MapView({
   orgPoints,
   geofences,
   geofencesView,
-  geofenceCounts,
+  geofenceStats: geofenceStatsMap,
+  highlightRegionId,
+  onHighlightChange,
+  windowLabel,
   children,
 }: Props): JSX.Element {
   const container = useRef<HTMLDivElement | null>(null);
   const map = useRef<L.Map | null>(null);
+  // Highlight view: the tags placed in the picked geofence, and its outline.
+  const highlightTagIds = useMemo(
+    () => (highlightRegionId !== null ? (geofenceStatsMap?.get(highlightRegionId)?.tagIds ?? new Set<string>()) : null),
+    [highlightRegionId, geofenceStatsMap],
+  );
+  const highlightFence = useMemo(
+    () => (highlightRegionId !== null ? (geofences.find((g) => g.regionId === highlightRegionId) ?? null) : null),
+    [highlightRegionId, geofences],
+  );
   const bases = useRef<Record<BaseName, L.TileLayer> | null>(null);
   const markers = useRef<L.LayerGroup | null>(null);
   const heat = useRef<L.HeatLayer | null>(null);
@@ -255,6 +361,15 @@ export function MapView({
   // Its own SVG renderer, same reasoning as the link lines below: cheap
   // insurance against churning the map's shared canvas renderer.
   const geofenceRenderer = useRef<L.SVG | null>(null);
+  // Where each geofence's count bubble sits. The bubbles live in a pane under
+  // the tag markers' canvas so a tag is always drawn on top of them — which
+  // also means the canvas swallows their clicks, so the map's own click
+  // handler hit-tests these positions instead.
+  const bubbles = useRef<Array<{ regionId: string; latlng: L.LatLng }>>([]);
+  // The DOM event of the last click a tag or reader marker handled, so the
+  // map-level click that follows it doesn't also open a bubble underneath.
+  const layerClick = useRef<Event | null>(null);
+  const [geofencePopup, setGeofencePopup] = useState<{ regionId: string; x: number; y: number } | null>(null);
   // Link lines get their own SVG renderer rather than sharing the map's
   // default canvas one that the tag markers use — the link layer is cleared
   // and rebuilt on its own schedule (every toggle, every snapshot refresh),
@@ -381,6 +496,11 @@ export function MapView({
     geofenceRenderer.current = L.svg({ padding: 0.5 });
     rulerLayer.current = L.layerGroup().addTo(instance);
     rulerRenderer.current = L.svg({ padding: 0.5 });
+    // Under the overlay pane (400), where the canvas with the tag markers is,
+    // so tags always draw on top of a geofence's count bubble.
+    const bubblePane = instance.createPane('geofenceCounts');
+    bubblePane.style.zIndex = '390';
+    bubblePane.style.pointerEvents = 'none';
     // heat.current and links.current are created lazily — see their own effects below.
 
     // Right-click opens a one-item menu ("Measure distance") at the cursor;
@@ -399,12 +519,32 @@ export function MapView({
       }
       setCtxMenu({ x: e.containerPoint.x, y: e.containerPoint.y, latlng: e.latlng });
     });
+    const bubbleAt = (point: L.Point): string | null => {
+      for (const b of bubbles.current) {
+        if (instance.latLngToContainerPoint(b.latlng).distanceTo(point) <= BUBBLE_SIZE / 2 + 2) return b.regionId;
+      }
+      return null;
+    };
     instance.on('click', (e: L.LeafletMouseEvent) => {
       setCtxMenu(null);
-      if (measuringIdRef.current) finishMeasurement(e.latlng);
+      if (measuringIdRef.current) {
+        finishMeasurement(e.latlng);
+        return;
+      }
+      if (layerClick.current === e.originalEvent) return;
+      const regionId = bubbleAt(e.containerPoint);
+      setGeofencePopup(regionId ? { regionId, x: e.containerPoint.x, y: e.containerPoint.y } : null);
     });
     instance.on('mousemove', (e: L.LeafletMouseEvent) => {
       if (measuringIdRef.current) setRulerHover(e.latlng);
+      // The bubbles can't take pointer events themselves (see above), so the
+      // pointer cursor over one is set here.
+      const container = instance.getContainer();
+      const over = bubbles.current.length > 0 && bubbleAt(e.containerPoint) !== null;
+      if (over !== (container.dataset['overBubble'] === '1')) {
+        container.dataset['overBubble'] = over ? '1' : '0';
+        container.style.cursor = over ? 'pointer' : '';
+      }
     });
 
     // The grid settles its own size after the first paint; without this the map
@@ -461,7 +601,7 @@ export function MapView({
       if (tag.lat === null || tag.lon === null) continue;
       const fillColor =
         colorMode === 'age'
-          ? ageColor(tag.fixAt, now)
+          ? GPS_FIX_COLOR[gpsFixBand(tag, latestRoundIds, now)]
           : colorMode === 'discovery'
             ? latestRoundIds.has(tag.tagId)
               ? AGE_COLOR.live
@@ -469,14 +609,17 @@ export function MapView({
             : liveGpsIds?.has(tag.tagId)
               ? AGE_COLOR.live
               : AGE_COLOR.none;
+      const dimmed = highlightTagIds !== null && !highlightTagIds.has(tag.tagId);
       const marker = L.circleMarker([tag.lat, tag.lon], {
         radius: 7,
         color: '#12140F',
         weight: 1.5,
-        fillColor,
-        fillOpacity: 0.95,
+        fillColor: dimmed ? DIMMED_COLOR : fillColor,
+        fillOpacity: dimmed ? 0.35 : 0.95,
+        opacity: dimmed ? 0.4 : 1,
       });
-      marker.on('click', () => {
+      marker.on('click', (e: L.LeafletMouseEvent) => {
+        layerClick.current = e.originalEvent;
         // A measurement in progress takes priority over selecting the tag —
         // finished right on the marker's own position rather than wherever
         // the click happened to land inside its radius.
@@ -490,7 +633,7 @@ export function MapView({
       marker.addTo(group);
       byTag.current.set(tag.tagId, marker);
     }
-  }, [snapshots, onSelect, colorMode, gpsWindow, historyAt, finishMeasurement]);
+  }, [snapshots, onSelect, colorMode, gpsWindow, historyAt, finishMeasurement, highlightTagIds]);
 
   // Markers vs. a density cloud of every raw fix, only in global mode — never
   // both at once, and never while the movement map is showing instead. The
@@ -569,6 +712,9 @@ export function MapView({
       for (const reading of linkReadings) {
         const tag = byId.get(reading.tagId);
         if (!tag || tag.lat === null || tag.lon === null) continue;
+        // In highlight view only the geofence's own tags pulse; the rest keep
+        // a line, fainter still, so the mesh around it stays readable.
+        const outsideHighlight = highlightTagIds !== null && !highlightTagIds.has(tag.tagId);
 
         const targetTag = reading.linkId ? byId.get(reading.linkId) : undefined;
         let origin: { lat: number; lon: number } | undefined =
@@ -597,11 +743,12 @@ export function MapView({
             // is drawn over — so the lines say only "these two are connected",
             // and the travelling ball carries the direction and the liveness.
             weight: 1,
-            opacity: 0.18,
+            opacity: outsideHighlight ? 0.07 : highlightTagIds !== null ? 0.45 : 0.18,
             interactive: false,
             renderer: linkRenderer.current ?? undefined,
           },
         ).addTo(group);
+        if (outsideHighlight) continue;
 
         const ball = L.marker([origin.lat, origin.lon], { icon: linkBallIcon(), interactive: false }).addTo(group);
         linkBalls.current.push({ origin, tag: tagPoint, ball });
@@ -648,7 +795,7 @@ export function MapView({
         linkAnimFrame.current = null;
       }
     };
-  }, [mode, linkView, heatmapView, snapshots, devices, linkReadings]);
+  }, [mode, linkView, heatmapView, snapshots, devices, linkReadings, highlightTagIds]);
 
   // The movement layer is attached only in movement mode — everything about
   // what it draws lives in the effect further down; this just controls
@@ -687,8 +834,9 @@ export function MapView({
     byDevice.current.clear();
     for (const device of devices) {
       if (device.lat === null || device.lon === null) continue;
+      const dimmed = highlightFence !== null && !pointInGeofence([device.lat, device.lon], highlightFence.coordinates);
       const marker = L.marker([device.lat, device.lon], {
-        icon: deviceIcon(device.positionSource),
+        icon: deviceIcon(device.positionSource, dimmed),
         zIndexOffset: 1000,
       });
       const name = device.label ? `${device.label} · reader` : `Reader ${device.imei}`;
@@ -696,7 +844,8 @@ export function MapView({
         direction: 'top',
         offset: [0, -10],
       });
-      marker.on('click', () => {
+      marker.on('click', (e: L.LeafletMouseEvent) => {
+        layerClick.current = e.originalEvent;
         // Same as a tag marker: a measurement in progress wins over
         // selecting, and ends right on the reader's own position.
         if (measuringIdRef.current) {
@@ -708,7 +857,7 @@ export function MapView({
       marker.addTo(group);
       byDevice.current.set(device.imei, marker);
     }
-  }, [devices, onSelectDevice, finishMeasurement]);
+  }, [devices, onSelectDevice, finishMeasurement, highlightFence]);
 
   // Same as picking a tag from the sidebar: a style change only, and a pan to
   // wherever that reader's marker actually sits.
@@ -727,21 +876,24 @@ export function MapView({
     const instance = map.current;
     const group = geofenceLayer.current;
     if (!instance || !group) return;
-    if (geofencesView) {
+    if (geofencesView || highlightRegionId !== null) {
       if (!instance.hasLayer(group)) group.addTo(instance);
     } else if (instance.hasLayer(group)) {
       instance.removeLayer(group);
     }
-  }, [geofencesView]);
+  }, [geofencesView, highlightRegionId]);
 
   useEffect(() => {
     const group = geofenceLayer.current;
     if (!group) return;
     group.clearLayers();
-    for (const fence of geofences) {
+    bubbles.current = [];
+    // Highlight view shows its own geofence and nothing else.
+    const shownFences = highlightRegionId !== null ? geofences.filter((g) => g.regionId === highlightRegionId) : geofences;
+    for (const fence of shownFences) {
       if (fence.coordinates.length < 3) continue;
       const polygon = L.polygon(fence.coordinates, {
-        color: fence.color ?? '#E9AE2F',
+        color: fence.color ?? GEOFENCE_DEFAULT_COLOR,
         weight: 2,
         fillOpacity: 0.06,
         interactive: false,
@@ -749,22 +901,20 @@ export function MapView({
       });
       polygon.bindTooltip(fence.name, { direction: 'center' });
       polygon.addTo(group);
-      const count = geofenceCounts?.get(fence.regionId);
-      const centre = count === undefined ? null : geofenceCentroid(fence.coordinates);
+      const count = geofenceStatsMap?.get(fence.regionId)?.counted;
+      const centre = count === undefined ? null : geofenceLabelPoint(fence.coordinates);
       if (count !== undefined && centre) {
-        L.marker(centre, {
-          icon: L.divIcon({
-            className: 'geofence-count-wrap',
-            html: `<span class="geofence-count">${count}</span>`,
-            iconSize: [34, 34],
-            iconAnchor: [17, 17],
-          }),
+        const latlng = L.latLng(centre[0], centre[1]);
+        L.marker(latlng, {
+          icon: geofenceCountIcon(count, fence.color ?? GEOFENCE_DEFAULT_COLOR),
+          pane: 'geofenceCounts',
           interactive: false,
           keyboard: false,
         }).addTo(group);
+        bubbles.current.push({ regionId: fence.regionId, latlng });
       }
     }
-  }, [geofences, geofenceCounts]);
+  }, [geofences, geofenceStatsMap, highlightRegionId]);
 
   // Draws every ruler: a dot at its start, and — once there's a second point,
   // whether that's the confirmed end or (for whichever one is still being
@@ -1011,6 +1161,42 @@ export function MapView({
           Recentre
         </button>
       </div>
+
+      {highlightRegionId !== null && (
+        <div className="highlight-bar">
+          <span>
+            Highlighting <b>{geofences.find((g) => g.regionId === highlightRegionId)?.name ?? 'geofence'}</b>
+          </span>
+          <button type="button" className="pill" onClick={() => onHighlightChange(null)}>
+            Exit highlight view
+          </button>
+        </div>
+      )}
+
+      {geofencePopup && (
+        <GeofenceInfoBox
+          fence={geofences.find((g) => g.regionId === geofencePopup.regionId) ?? null}
+          stats={geofenceStatsMap?.get(geofencePopup.regionId) ?? null}
+          readersInside={
+            devices.filter((d) => {
+              const fence = geofences.find((g) => g.regionId === geofencePopup.regionId);
+              return fence && d.lat !== null && d.lon !== null && pointInGeofence([d.lat, d.lon], fence.coordinates);
+            }).length
+          }
+          windowLabel={windowLabel}
+          // Kept on screen: it opens to the right of the click unless that would run off the edge.
+          position={{
+            x: Math.min(geofencePopup.x, (container.current?.clientWidth ?? Infinity) - 312),
+            y: Math.min(geofencePopup.y, (container.current?.clientHeight ?? Infinity) - 330),
+          }}
+          highlighted={highlightRegionId === geofencePopup.regionId}
+          onHighlight={(on) => {
+            onHighlightChange(on ? geofencePopup.regionId : null);
+            setGeofencePopup(null);
+          }}
+          onClose={() => setGeofencePopup(null)}
+        />
+      )}
 
       {ctxMenu && (
         <div className="ruler-menu" style={{ left: ctxMenu.x, top: ctxMenu.y }}>

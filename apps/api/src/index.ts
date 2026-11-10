@@ -77,6 +77,11 @@ app.route('/api', createApi({ store, config, bus }));
 // The mobile app (apps/mobile) is a separate build served under /m. It is
 // registered before the web app's static files and fallback, which would
 // otherwise answer every /m path with the desktop app's index.html.
+/** Content-hashed bundles: safe to cache for a year. */
+const IMMUTABLE = 'public, max-age=31536000, immutable';
+/** A path with a file extension, or under /assets/ — never a client-side route. */
+const looksLikeFile = (path: string): boolean => /\/assets\//.test(path) || /\.[a-z0-9]{1,8}$/i.test(path);
+
 const mobileRoot = process.env['MOBILE_ROOT'] ?? resolve(process.cwd(), 'apps/mobile/dist');
 const mobileIndexPath = join(mobileRoot, 'index.html');
 const hasMobileBuild = existsSync(mobileIndexPath);
@@ -92,10 +97,14 @@ if (hasMobileBuild) {
       // keeps running an old app shell after a deploy.
       onFound: (path, c) => {
         if (/(sw\.js|manifest\.webmanifest|index\.html)$/.test(path)) c.header('Cache-Control', 'no-cache');
+        else if (/[\\/]assets[\\/]/.test(path)) c.header('Cache-Control', IMMUTABLE);
       },
     }),
   );
   app.get('/m/*', async (c) => {
+    // A missing script or stylesheet is a 404, never the app's HTML: served as
+    // HTML, a module script fails to run and the page stays blank (see below).
+    if (looksLikeFile(c.req.path)) return c.notFound();
     c.header('Cache-Control', 'no-cache');
     return c.html(await readFile(mobileIndexPath, 'utf8'));
   });
@@ -106,10 +115,27 @@ const indexHtmlPath = join(webRoot, 'index.html');
 const hasWebBuild = existsSync(indexHtmlPath);
 
 if (hasWebBuild) {
-  app.use('*', serveStatic({ root: webRoot }));
+  app.use(
+    '*',
+    serveStatic({
+      root: webRoot,
+      // Hashed bundles never change under the same name, so they can be kept
+      // for good; index.html must always be re-checked, so a deploy's new
+      // bundle names are picked up on the next load.
+      onFound: (path, c) => {
+        if (/index\.html$/.test(path)) c.header('Cache-Control', 'no-cache');
+        else if (/[\\/]assets[\\/]/.test(path)) c.header('Cache-Control', IMMUTABLE);
+      },
+    }),
+  );
   // Single-page app fallback: client routes are not files on disk.
   app.get('*', async (c) => {
-    if (c.req.path.startsWith('/api/')) return c.notFound();
+    // A request for a file that isn't there — typically a bundle from the
+    // previous deploy, asked for by a page loaded just before it — gets a
+    // plain 404. Answering it with index.html (200, text/html) made the
+    // browser refuse to run it as a script and leave the page black.
+    if (c.req.path.startsWith('/api/') || looksLikeFile(c.req.path)) return c.notFound();
+    c.header('Cache-Control', 'no-cache');
     return c.html(await readFile(indexHtmlPath, 'utf8'));
   });
 } else {

@@ -411,7 +411,11 @@ CREATE TABLE IF NOT EXISTS alert_history (
   tag_id      TEXT NOT NULL,
   kind        TEXT NOT NULL,
   started_at  INTEGER NOT NULL,
-  ended_at    INTEGER
+  ended_at    INTEGER,
+  -- Where the alert was, while it lasted: the fix behind it, if it had one.
+  lat         REAL,
+  lon         REAL,
+  fix_at      INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS alert_history_org_ended ON alert_history(org_id, ended_at);
@@ -607,6 +611,14 @@ function migrateReadingsLinkId(db: DatabaseSyncType): void {
  * log-scraping path, which is exactly what the `DEFAULT 'log'` backfills it
  * as — so no separate data fix is needed.
  */
+/** `alert_history` gained a position after it first shipped. */
+function migrateAlertHistoryPosition(db: DatabaseSyncType): void {
+  const names = new Set((db.prepare('PRAGMA table_info(alert_history)').all() as Array<{ name: string }>).map((c) => c.name));
+  if (!names.has('lat')) db.exec('ALTER TABLE alert_history ADD COLUMN lat REAL');
+  if (!names.has('lon')) db.exec('ALTER TABLE alert_history ADD COLUMN lon REAL');
+  if (!names.has('fix_at')) db.exec('ALTER TABLE alert_history ADD COLUMN fix_at INTEGER');
+}
+
 function migrateIngestSource(db: DatabaseSyncType): void {
   const readingColumns = db.prepare('PRAGMA table_info(readings)').all() as Array<{ name: string }>;
   if (!readingColumns.some((c) => c.name === 'source')) {
@@ -808,6 +820,7 @@ export class Store {
     migrateDeviceIdentity(this.db);
     migrateOrgHiddenTags(this.db);
     migrateIngestSource(this.db);
+    migrateAlertHistoryPosition(this.db);
     bootstrapFoundingAdmin(this.db, foundingAdminUsername);
   }
 
@@ -2846,15 +2859,31 @@ export class Store {
    * on (the tag recovered and went back into the same alert between two
    * checks), the open episode is closed at the new start and a fresh one opened.
    */
-  recordAlertActive(orgId: string, tagId: string, kind: string, startedAt: number): void {
+  recordAlertActive(
+    orgId: string,
+    tagId: string,
+    kind: string,
+    startedAt: number,
+    position: { lat: number | null; lon: number | null; fixAt: number | null } = { lat: null, lon: null, fixAt: null },
+  ): void {
     const open = this.db
       .prepare('SELECT id, started_at FROM alert_history WHERE org_id = ? AND tag_id = ? AND kind = ? AND ended_at IS NULL')
       .get(orgId, tagId, kind) as { id: number; started_at: number } | undefined;
-    if (open && startedAt <= open.started_at) return;
+    const hasFix = position.lat !== null && position.lon !== null;
+    if (open && startedAt <= open.started_at) {
+      // Same episode: keep its position current, so a fix that arrives while
+      // the alert is still open is what the history row ends up with.
+      if (hasFix) {
+        this.db
+          .prepare('UPDATE alert_history SET lat = ?, lon = ?, fix_at = ? WHERE id = ?')
+          .run(position.lat, position.lon, position.fixAt, open.id);
+      }
+      return;
+    }
     if (open) this.db.prepare('UPDATE alert_history SET ended_at = ? WHERE id = ?').run(startedAt, open.id);
     this.db
-      .prepare('INSERT INTO alert_history (org_id, tag_id, kind, started_at) VALUES (?, ?, ?, ?)')
-      .run(orgId, tagId, kind, startedAt);
+      .prepare('INSERT INTO alert_history (org_id, tag_id, kind, started_at, lat, lon, fix_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(orgId, tagId, kind, startedAt, hasFix ? position.lat : null, hasFix ? position.lon : null, hasFix ? position.fixAt : null);
   }
 
   /** Closes the open episode of an alert that has cleared. */
@@ -2878,7 +2907,7 @@ export class Store {
     const col = status === 'past' ? 'h.ended_at' : 'h.started_at';
     const rows = this.db
       .prepare(
-        `SELECT h.id, h.tag_id, h.kind, h.started_at, h.ended_at, t.label
+        `SELECT h.id, h.tag_id, h.kind, h.started_at, h.ended_at, h.lat, h.lon, h.fix_at, t.label
            FROM alert_history h
            LEFT JOIN org_tags t ON t.org_id = h.org_id AND t.tag_id = h.tag_id
           WHERE h.org_id = ? ${where} AND ${col} < ?
@@ -2891,6 +2920,9 @@ export class Store {
       kind: string;
       started_at: number;
       ended_at: number | null;
+      lat: number | null;
+      lon: number | null;
+      fix_at: number | null;
       label: string | null;
     }>;
     return rows.map((r) => ({
@@ -2900,6 +2932,9 @@ export class Store {
       kind: r.kind as AlertHistoryEntry['kind'],
       startedAt: r.started_at,
       endedAt: r.ended_at,
+      lat: r.lat,
+      lon: r.lon,
+      fixAt: r.fix_at,
     }));
   }
 

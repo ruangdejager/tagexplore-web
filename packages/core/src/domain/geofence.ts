@@ -16,7 +16,8 @@ import { checkedInTagIds, type DiscoveryWindow } from './discoveryWindow.js';
  *      position on record from either the tag's own fix or that reader.
  *
  * Then:
- *   - inside a geofence: that one (the smallest, where geofences overlap);
+ *   - inside one or more geofences: every one of them — where geofences
+ *     overlap, a tag inside both counts in both;
  *   - outside every geofence, and the position is the tag's *own* GPS at
  *     least `GEOFENCE_EXCLUDE_METERS` from the nearest one: in no geofence;
  *   - otherwise: the nearest geofence.
@@ -37,10 +38,13 @@ export interface ResolvedTagPosition {
 
 export interface TagGeofenceAllocation {
   tagId: string;
-  /** The geofence the tag is counted in, or null when it was left out (see `reason`). */
-  regionId: string | null;
+  /**
+   * Every geofence the tag is counted in: all the ones it is inside, or just
+   * the nearest one. Empty when it was left out (see `reason`).
+   */
+  regionIds: string[];
   position: ResolvedTagPosition | null;
-  /** Metres outside the chosen (or nearest) geofence; 0 when inside. */
+  /** Metres outside the nearest geofence; 0 when inside. */
   outsideMeters: number;
   reason: 'inside' | 'nearest' | 'outside' | 'no-position' | 'no-geofences';
 }
@@ -87,8 +91,8 @@ export function distanceToGeofenceEdge(point: LatLon, coordinates: LatLon[]): nu
   return best;
 }
 
-/** Area in square metres — only used to prefer the smaller of two overlapping geofences. */
-function areaSquareMeters(coordinates: LatLon[]): number {
+/** Area in square metres. */
+export function geofenceAreaSquareMeters(coordinates: LatLon[]): number {
   if (coordinates.length < 3) return 0;
   const origin = coordinates[0]!;
   let sum = 0;
@@ -127,6 +131,41 @@ export function geofenceCentroid(coordinates: LatLon[]): LatLon | null {
   cy /= 3 * a;
   const cos = Math.cos((origin[0] * Math.PI) / 180);
   return [origin[0] + cy / M_PER_DEG_LAT, origin[1] + cx / (M_PER_DEG_LON_EQUATOR * cos)];
+}
+
+/**
+ * Where a geofence's count bubble goes: the centroid when that is inside the
+ * shape, otherwise a point guaranteed inside it — the middle of the widest
+ * stretch of the shape along a few horizontal lines through it. A C- or
+ * L-shaped geofence has its centroid outside; this pulls the bubble back in.
+ */
+export function geofenceLabelPoint(coordinates: LatLon[]): LatLon | null {
+  const centroid = geofenceCentroid(coordinates);
+  if (!centroid || coordinates.length < 3 || pointInGeofence(centroid, coordinates)) return centroid;
+  const lats = coordinates.map((c) => c[0]);
+  const minLat = Math.min(...lats);
+  const maxLat = Math.max(...lats);
+  let best: { point: LatLon; width: number } | null = null;
+  const STEPS = 24;
+  for (let k = 0; k < STEPS; k++) {
+    // Half-steps, so a scan line never runs exactly along a horizontal edge.
+    const lat = minLat + ((maxLat - minLat) * (k + 0.5)) / STEPS;
+    const xs: number[] = [];
+    for (let i = 0, j = coordinates.length - 1; i < coordinates.length; j = i++) {
+      const [yi, xi] = coordinates[i]!;
+      const [yj, xj] = coordinates[j]!;
+      if (yi > lat !== yj > lat) xs.push(xi + ((lat - yi) * (xj - xi)) / (yj - yi));
+    }
+    xs.sort((a, b) => a - b);
+    for (let m = 0; m + 1 < xs.length; m += 2) {
+      const width = xs[m + 1]! - xs[m]!;
+      // Lines nearer the centroid's own latitude win ties, so the bubble stays
+      // as central as the shape allows.
+      const score = width / (1 + Math.abs(lat - centroid[0]) / (maxLat - minLat || 1));
+      if (!best || score > best.width) best = { point: [lat, (xs[m]! + xs[m + 1]!) / 2], width: score };
+    }
+  }
+  return best?.point ?? centroid;
 }
 
 /**
@@ -173,7 +212,7 @@ export function allocateTagsToGeofences(
 ): Map<string, TagGeofenceAllocation> {
   const fences = geofences
     .filter((g) => g.coordinates.length >= 3)
-    .map((g) => ({ id: g.regionId, coords: g.coordinates, area: areaSquareMeters(g.coordinates) }));
+    .map((g) => ({ id: g.regionId, coords: g.coordinates }));
   const readers = new Map(devices.map((d) => [d.imei, d]));
   const latestRound = window === 'latest' ? checkedInTagIds(snapshots, 'latest', nowMs) : new Set<string>();
   const out = new Map<string, TagGeofenceAllocation>();
@@ -182,20 +221,17 @@ export function allocateTagsToGeofences(
     const position = resolveTagPosition(snap, readers.get(snap.sourceDeviceImei), fixInWindow(snap, window, nowMs, latestRound));
     const base = { tagId: snap.tagId, position };
     if (!position) {
-      out.set(snap.tagId, { ...base, regionId: null, outsideMeters: 0, reason: 'no-position' });
+      out.set(snap.tagId, { ...base, regionIds: [], outsideMeters: 0, reason: 'no-position' });
       continue;
     }
     if (fences.length === 0) {
-      out.set(snap.tagId, { ...base, regionId: null, outsideMeters: 0, reason: 'no-geofences' });
+      out.set(snap.tagId, { ...base, regionIds: [], outsideMeters: 0, reason: 'no-geofences' });
       continue;
     }
     const point: LatLon = [position.lat, position.lon];
-    let inside: (typeof fences)[number] | null = null;
-    for (const f of fences) {
-      if (pointInGeofence(point, f.coords) && (!inside || f.area < inside.area)) inside = f;
-    }
-    if (inside) {
-      out.set(snap.tagId, { ...base, regionId: inside.id, outsideMeters: 0, reason: 'inside' });
+    const inside = fences.filter((f) => pointInGeofence(point, f.coords)).map((f) => f.id);
+    if (inside.length > 0) {
+      out.set(snap.tagId, { ...base, regionIds: inside, outsideMeters: 0, reason: 'inside' });
       continue;
     }
     let nearest = fences[0]!;
@@ -209,9 +245,9 @@ export function allocateTagsToGeofences(
     }
     const ownGps = position.source === 'tag-gps' || position.source === 'tag-last-gps';
     if (ownGps && nearestM >= GEOFENCE_EXCLUDE_METERS) {
-      out.set(snap.tagId, { ...base, regionId: null, outsideMeters: nearestM, reason: 'outside' });
+      out.set(snap.tagId, { ...base, regionIds: [], outsideMeters: nearestM, reason: 'outside' });
     } else {
-      out.set(snap.tagId, { ...base, regionId: nearest.id, outsideMeters: nearestM, reason: 'nearest' });
+      out.set(snap.tagId, { ...base, regionIds: [nearest.id], outsideMeters: nearestM, reason: 'nearest' });
     }
   }
   return out;
@@ -225,8 +261,56 @@ export function geofenceTagCounts(
 ): Map<string, number> {
   const counts = new Map(geofences.map((g) => [g.regionId, 0]));
   for (const tagId of countedTagIds) {
-    const regionId = allocations.get(tagId)?.regionId;
-    if (regionId != null) counts.set(regionId, (counts.get(regionId) ?? 0) + 1);
+    for (const regionId of allocations.get(tagId)?.regionIds ?? []) counts.set(regionId, (counts.get(regionId) ?? 0) + 1);
   }
   return counts;
+}
+
+/** What a geofence's info box says about the tags placed in it. */
+export interface GeofenceStats {
+  regionId: string;
+  /** Counted tags (the count's own set) placed in this geofence — the bubble's number. */
+  counted: number;
+  /** Every tag placed in it, counted in the window or not. */
+  placed: number;
+  /** Placed because their position is inside it. */
+  inside: number;
+  /** Placed here as the nearest geofence, from just outside. */
+  nearest: number;
+  /** Judged at the tag's own GPS (current or last known). */
+  byTagGps: number;
+  /** Judged at the reporting reader's position. */
+  byReader: number;
+  /** Also counted in another, overlapping geofence. */
+  shared: number;
+  /** The tag ids placed here, for highlighting them on the map. */
+  tagIds: Set<string>;
+}
+
+export function geofenceStats(
+  allocations: Map<string, TagGeofenceAllocation>,
+  geofences: GeofenceRegion[],
+  countedTagIds: Set<string>,
+): Map<string, GeofenceStats> {
+  const out = new Map<string, GeofenceStats>(
+    geofences.map((g) => [
+      g.regionId,
+      { regionId: g.regionId, counted: 0, placed: 0, inside: 0, nearest: 0, byTagGps: 0, byReader: 0, shared: 0, tagIds: new Set() },
+    ]),
+  );
+  for (const a of allocations.values()) {
+    for (const regionId of a.regionIds) {
+      const s = out.get(regionId);
+      if (!s) continue;
+      s.placed += 1;
+      s.tagIds.add(a.tagId);
+      if (countedTagIds.has(a.tagId)) s.counted += 1;
+      if (a.reason === 'inside') s.inside += 1;
+      else s.nearest += 1;
+      if (a.position?.source === 'tag-gps' || a.position?.source === 'tag-last-gps') s.byTagGps += 1;
+      else s.byReader += 1;
+      if (a.regionIds.length > 1) s.shared += 1;
+    }
+  }
+  return out;
 }

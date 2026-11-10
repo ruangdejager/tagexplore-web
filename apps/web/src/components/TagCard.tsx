@@ -9,6 +9,7 @@ import {
   type DeviceRow,
   type TagSnapshot,
 } from '@tagexplore/core';
+import { MapsLinkButton } from './MapsLinkButton.js';
 
 interface Props {
   tag: TagSnapshot;
@@ -110,17 +111,7 @@ export function TagCard({ tag, devices, now, onClose, onShowTrend }: Props): JSX
         <button className="pill" onClick={() => onShowTrend(tag.tagId)}>
           Battery trend
         </button>
-        {tag.lat !== null && tag.lon !== null && (
-          <a
-            className="pill"
-            style={{ textAlign: 'center', textDecoration: 'none' }}
-            href={`https://www.google.com/maps/search/?api=1&query=${tag.lat},${tag.lon}`}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Open in maps
-          </a>
-        )}
+        {tag.lat !== null && tag.lon !== null && <MapsLinkButton lat={tag.lat} lon={tag.lon} />}
       </div>
     </div>
   );

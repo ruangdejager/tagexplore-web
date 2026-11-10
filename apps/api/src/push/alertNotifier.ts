@@ -135,7 +135,7 @@ export function createAlertNotifier(deps: {
       store.setAlertActive(orgId, alert.tagId, alert.kind, nowMs);
       // Idempotent: also opens an episode for an alert that was already
       // active before the history table existed.
-      store.recordAlertActive(orgId, alert.tagId, alert.kind, Math.min(alertStartedAt(alert), nowMs));
+      store.recordAlertActive(orgId, alert.tagId, alert.kind, Math.min(alertStartedAt(alert), nowMs), alert);
       if (entering && (prev?.lastNotifiedAt == null || nowMs - prev.lastNotifiedAt >= ALERT_RENOTIFY_COOLDOWN_MS)) {
         toNotify.push(alert);
       }

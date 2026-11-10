@@ -1,6 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
-import { fixAfterStill, formatAge, type AlertHistoryEntry, type OrgTagRow, type TagSnapshot } from '@tagexplore/core';
+import {
+  BATTERY_LABEL,
+  batteryLevel,
+  fixAfterStill,
+  formatAge,
+  type AlertHistoryEntry,
+  type OrgTagRow,
+  type TagSnapshot,
+} from '@tagexplore/core';
 import * as api from '../api.js';
+import { MapsLinkButton } from './MapsLinkButton.js';
 
 interface Props {
   /** Tags switched on in the main sidebar list — what this panel actually watches. */
@@ -8,20 +17,33 @@ interface Props {
   snapshots: TagSnapshot[];
   tags: OrgTagRow[];
   now: number;
-  /** Same handler the tag list's own rows call — clicking a tag here selects
-   *  it the same way, which is what pans the map to its last known location. */
+  /** Same handler the tag list's own rows call — selecting a tag pans the map to its last known location. */
   onSelectTag: (tagId: string) => void;
   /** Whose alert history to show. */
   orgId: string | null;
-  /** Bumped when the live stream says this org has new data — the past list refetches on it. */
+  /** Bumped when the live stream says this org has new data — the history list refetches on it. */
   liveNonce: number;
 }
 
 const STALE_HOURS = 8;
-/** How many cleared alerts the Past tab shows. */
-const PAST_LIMIT = 100;
+/** How many cleared alerts the History tab shows. */
+const HISTORY_LIMIT = 100;
+const NO_FIX_MESSAGE = 'There is no GPS fix for this alert.';
 
-type Tab = 'active' | 'past';
+type Tab = 'active' | 'history';
+
+interface ActiveAlert {
+  key: string;
+  tagId: string;
+  kind: 'still' | 'stale';
+  message: string;
+  since: number;
+  snap: TagSnapshot;
+  /** The fix behind the alert: since it went still, or the last one for a stale tag. Null for "No fix". */
+  fixAt: number | null;
+  lat: number | null;
+  lon: number | null;
+}
 
 function timestamp(ms: number): string {
   return new Date(ms).toLocaleString('en-ZA', {
@@ -40,24 +62,31 @@ function timestamp(ms: number): string {
  * notice something needs attention; the arrow opens the detail.
  *
  * Two tabs: **Active** is what is wrong right now, worked out in the browser
- * from the tags on screen; **Past** is the server's record of alerts that have
- * since cleared, so what happened overnight is still there in the morning.
+ * from the tags on screen; **History** is the server's record of alerts that
+ * have since cleared. Clicking a row opens its details in place: an active
+ * alert offers "Show on map" and Google Maps, a past one Google Maps only.
  * Renders nothing only when there is neither an active alert nor any history.
  */
 export function AlertsPanel({ watchedTagIds, snapshots, tags, now, onSelectTag, orgId, liveNonce }: Props): JSX.Element | null {
   const [expanded, setExpanded] = useState(false);
   const [tab, setTab] = useState<Tab>('active');
-  const [past, setPast] = useState<AlertHistoryEntry[] | null>(null);
+  const [history, setHistory] = useState<AlertHistoryEntry[] | null>(null);
+  const [openActive, setOpenActive] = useState<string | null>(null);
+  const [openPast, setOpenPast] = useState<number | null>(null);
   const labelFor = useMemo(() => new Map(tags.map((t) => [t.tagId, t.label])), [tags]);
 
-  useEffect(() => setPast(null), [orgId]);
+  useEffect(() => {
+    setHistory(null);
+    setOpenActive(null);
+    setOpenPast(null);
+  }, [orgId]);
   useEffect(() => {
     if (!orgId) return;
     let cancelled = false;
     api
-      .fetchAlertHistory(orgId, 'past', PAST_LIMIT)
-      .then((res) => !cancelled && setPast(res.alerts))
-      .catch(() => !cancelled && setPast((prev) => prev ?? []));
+      .fetchAlertHistory(orgId, 'past', HISTORY_LIMIT)
+      .then((res) => !cancelled && setHistory(res.alerts))
+      .catch(() => !cancelled && setHistory((prev) => prev ?? []));
     return () => {
       cancelled = true;
     };
@@ -65,16 +94,7 @@ export function AlertsPanel({ watchedTagIds, snapshots, tags, now, onSelectTag, 
 
   const alerts = useMemo(() => {
     const staleCutoff = now - STALE_HOURS * 3_600_000;
-    // `fix` only on a still alert: the newest GPS fix since the tag went
-    // still, or null for "No fix" (none has arrived since).
-    const rows: Array<{
-      key: string;
-      tagId: string;
-      message: string;
-      since: number;
-      fix?: { at: number | null; stillSince: number };
-    }> = [];
-
+    const rows: ActiveAlert[] = [];
     for (const tagId of watchedTagIds) {
       const snap = snapshots.find((s) => s.tagId === tagId);
       if (!snap) continue;
@@ -82,46 +102,52 @@ export function AlertsPanel({ watchedTagIds, snapshots, tags, now, onSelectTag, 
       // a stale one — "still" already explains why it hasn't moved, so "not
       // seen in Xh" would just be a second, redundant alarm for the same tag.
       if (snap.movementState === 1) {
-        // Whether a GPS fix has come in since the tag went still, which is
-        // what says where it actually stopped.
-        const stillSince = snap.stillSince ?? snap.lastSeenAt;
+        // Only a fix since it went still says where it actually stopped.
+        const fix = fixAfterStill(snap);
         rows.push({
           key: `${tagId}-still`,
           tagId,
+          kind: 'still',
           message: 'still',
-          since: stillSince,
-          fix: { at: fixAfterStill(snap), stillSince },
+          since: snap.stillSince ?? snap.lastSeenAt,
+          snap,
+          fixAt: fix,
+          lat: fix !== null ? snap.lat : null,
+          lon: fix !== null ? snap.lon : null,
         });
       } else if (snap.lastSeenAt < staleCutoff) {
         rows.push({
           key: `${tagId}-stale`,
           tagId,
+          kind: 'stale',
           message: `not seen in ${formatAge(now - snap.lastSeenAt)}`,
           since: snap.lastSeenAt + STALE_HOURS * 3_600_000,
+          snap,
+          fixAt: snap.lat !== null ? snap.fixAt : null,
+          lat: snap.lat,
+          lon: snap.lon,
         });
       }
     }
     return rows;
   }, [watchedTagIds, snapshots, now]);
 
-  const pastRows = past ?? [];
-  if (alerts.length === 0 && pastRows.length === 0) return null;
+  const historyRows = history ?? [];
+  if (alerts.length === 0 && historyRows.length === 0) return null;
 
-  const tagLink = (tagId: string, label: string | null | undefined): JSX.Element => (
-    <span
-      className="alert-tag"
-      role="button"
-      tabIndex={0}
-      onClick={() => onSelectTag(tagId)}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          onSelectTag(tagId);
-        }
-      }}
-    >
+  const active = openActive !== null ? (alerts.find((a) => a.key === openActive) ?? null) : null;
+  const past = openPast !== null ? (historyRows.find((a) => a.id === openPast) ?? null) : null;
+
+  const nameOf = (tagId: string, label: string | null | undefined): JSX.Element => (
+    <span className="alert-tag">
       {tagId}
       {label && <span className="tag-label"> {label}</span>}
+    </span>
+  );
+
+  const fixBadge = (fixAt: number | null, title: string): JSX.Element => (
+    <span className={`alert-gps-fix ${fixAt !== null ? 'alert-gps-fix-yes' : 'alert-gps-fix-no'}`} title={title}>
+      {fixAt !== null ? `fix ✓ ${formatAge(now - fixAt)} ago` : 'No fix'}
     </span>
   );
 
@@ -140,52 +166,143 @@ export function AlertsPanel({ watchedTagIds, snapshots, tags, now, onSelectTag, 
       {expanded && (
         <>
           <div className="alerts-tabs" role="tablist">
-            <button type="button" role="tab" aria-selected={tab === 'active'} data-on={tab === 'active' ? '1' : '0'} onClick={() => setTab('active')}>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === 'active'}
+              data-on={tab === 'active' ? '1' : '0'}
+              onClick={() => setTab('active')}
+            >
               Active ({alerts.length})
             </button>
-            <button type="button" role="tab" aria-selected={tab === 'past'} data-on={tab === 'past' ? '1' : '0'} onClick={() => setTab('past')}>
-              Past ({pastRows.length}
-              {pastRows.length === PAST_LIMIT ? '+' : ''})
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === 'history'}
+              data-on={tab === 'history' ? '1' : '0'}
+              onClick={() => setTab('history')}
+            >
+              History ({historyRows.length}
+              {historyRows.length === HISTORY_LIMIT ? '+' : ''})
             </button>
           </div>
 
-          {tab === 'active' && (
+          {tab === 'active' && active && (
+            <div className="alert-detail">
+              <div className="alert-detail-head">
+                {nameOf(active.tagId, labelFor.get(active.tagId))}
+                <button type="button" className="card-close" aria-label="Close" onClick={() => setOpenActive(null)}>
+                  ×
+                </button>
+              </div>
+              <dl>
+                <dt>Alert</dt>
+                <dd className="alert-message">{active.kind === 'still' ? 'Still' : 'Not seen'}</dd>
+                <dt>{active.kind === 'still' ? 'Still since' : 'Stale since'}</dt>
+                <dd>
+                  {timestamp(active.since)} · {formatAge(now - active.since)}
+                </dd>
+                <dt>Last seen</dt>
+                <dd>
+                  {timestamp(active.snap.lastSeenAt)} · {formatAge(now - active.snap.lastSeenAt)} ago
+                </dd>
+                <dt>{active.kind === 'still' ? 'Fix since still' : 'Last fix'}</dt>
+                <dd>{active.fixAt !== null ? `${timestamp(active.fixAt)} · ${formatAge(now - active.fixAt)} ago` : 'No fix'}</dd>
+                {active.lat !== null && active.lon !== null && (
+                  <>
+                    <dt>Position</dt>
+                    <dd>
+                      {active.lat.toFixed(5)}, {active.lon.toFixed(5)}
+                    </dd>
+                  </>
+                )}
+                {active.snap.batteryMv !== null && (
+                  <>
+                    <dt>Battery</dt>
+                    <dd>
+                      {(active.snap.batteryMv / 1000).toFixed(2)}V · {BATTERY_LABEL[batteryLevel(active.snap.batteryMv)]}
+                    </dd>
+                  </>
+                )}
+              </dl>
+              <div className="card-actions">
+                <button type="button" className="pill" onClick={() => onSelectTag(active.tagId)}>
+                  Show on map
+                </button>
+                <MapsLinkButton lat={active.lat} lon={active.lon} label="Google Maps" noFixMessage={NO_FIX_MESSAGE} />
+              </div>
+            </div>
+          )}
+
+          {tab === 'active' && !active && (
             <div className="alerts-list">
               {alerts.length === 0 && <div className="empty alerts-empty">No active alerts.</div>}
               {alerts.map((a) => (
-                <div key={a.key} className="alert-row">
+                <button key={a.key} type="button" className="alert-row" onClick={() => setOpenActive(a.key)}>
                   <span className="alert-tag-group">
-                    {tagLink(a.tagId, labelFor.get(a.tagId))}
-                    {a.fix && (
-                      <span
-                        className={`alert-gps-fix ${a.fix.at !== null ? 'alert-gps-fix-yes' : 'alert-gps-fix-no'}`}
-                        title={
-                          a.fix.at !== null
-                            ? `GPS fix ${formatAge(now - a.fix.at)} ago, after it went still ${formatAge(now - a.fix.stillSince)} ago`
-                            : `No GPS fix since it went still ${formatAge(now - a.fix.stillSince)} ago`
-                        }
-                      >
-                        {a.fix.at !== null ? `fix ✓ ${formatAge(now - a.fix.at)} ago` : 'No fix'}
-                      </span>
-                    )}
+                    {nameOf(a.tagId, labelFor.get(a.tagId))}
+                    {a.kind === 'still' &&
+                      fixBadge(
+                        a.fixAt,
+                        a.fixAt !== null
+                          ? `GPS fix ${formatAge(now - a.fixAt)} ago, after it went still ${formatAge(now - a.since)} ago`
+                          : `No GPS fix since it went still ${formatAge(now - a.since)} ago`,
+                      )}
                   </span>
                   <span className="alert-message" title={`Since ${timestamp(a.since)}`}>
                     {a.message}
                   </span>
-                </div>
+                </button>
               ))}
             </div>
           )}
 
-          {tab === 'past' && (
+          {tab === 'history' && past && (
+            <div className="alert-detail">
+              <div className="alert-detail-head">
+                {nameOf(past.tagId, past.label ?? labelFor.get(past.tagId))}
+                <button type="button" className="card-close" aria-label="Close" onClick={() => setOpenPast(null)}>
+                  ×
+                </button>
+              </div>
+              <dl>
+                <dt>Alert</dt>
+                <dd>{past.kind === 'still' ? 'Still' : 'Not seen'}</dd>
+                <dt>Started</dt>
+                <dd>{timestamp(past.startedAt)}</dd>
+                <dt>Cleared</dt>
+                <dd>{timestamp(past.endedAt!)}</dd>
+                <dt>Lasted</dt>
+                <dd>{formatAge(past.endedAt! - past.startedAt)}</dd>
+                <dt>GPS fix</dt>
+                <dd>{past.fixAt !== null ? timestamp(past.fixAt) : 'No fix'}</dd>
+                {past.lat !== null && past.lon !== null && (
+                  <>
+                    <dt>Position</dt>
+                    <dd>
+                      {past.lat.toFixed(5)}, {past.lon.toFixed(5)}
+                    </dd>
+                  </>
+                )}
+              </dl>
+              <div className="card-actions">
+                <MapsLinkButton lat={past.lat} lon={past.lon} label="Google Maps" noFixMessage={NO_FIX_MESSAGE} />
+              </div>
+            </div>
+          )}
+
+          {tab === 'history' && !past && (
             <div className="alerts-list">
-              {past === null && <div className="empty alerts-empty">Loading…</div>}
-              {past !== null && pastRows.length === 0 && <div className="empty alerts-empty">No past alerts yet.</div>}
-              {pastRows.map((a) => (
-                <div key={a.id} className="alert-row alert-row-past">
+              {history === null && <div className="empty alerts-empty">Loading…</div>}
+              {history !== null && historyRows.length === 0 && <div className="empty alerts-empty">No alert history yet.</div>}
+              {historyRows.map((a) => (
+                <button key={a.id} type="button" className="alert-row alert-row-past" onClick={() => setOpenPast(a.id)}>
                   <span className="alert-tag-group">
-                    {tagLink(a.tagId, a.label ?? labelFor.get(a.tagId))}
+                    {nameOf(a.tagId, a.label ?? labelFor.get(a.tagId))}
                     <span className="alert-past-kind">{a.kind === 'still' ? 'still' : 'not seen'}</span>
+                    <span className={`alert-gps-fix ${a.fixAt !== null ? 'alert-gps-fix-yes' : 'alert-gps-fix-no'}`}>
+                      {a.fixAt !== null ? 'fix ✓' : 'No fix'}
+                    </span>
                   </span>
                   <span
                     className="alert-past-when"
@@ -193,7 +310,7 @@ export function AlertsPanel({ watchedTagIds, snapshots, tags, now, onSelectTag, 
                   >
                     {timestamp(a.startedAt)} · {formatAge(a.endedAt! - a.startedAt)}
                   </span>
-                </div>
+                </button>
               ))}
             </div>
           )}

@@ -14,6 +14,7 @@ import {
 import { alertText } from '../format.js';
 import type { TagRow } from '../useOrgData.js';
 import { Sheet } from './Sheet.js';
+import { MapsLinkButton } from './MapsLinkButton.js';
 
 const MOVEMENT: Record<number, string> = { 0: 'moving', 1: 'still' };
 
@@ -70,16 +71,7 @@ export function TagSheet(props: {
             Show on map
           </button>
         )}
-        {tag?.lat != null && tag.lon != null && (
-          <a
-            className="secondary as-button"
-            href={`https://www.google.com/maps/search/?api=1&query=${tag.lat},${tag.lon}`}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Open in Maps
-          </a>
-        )}
+        {tag?.lat != null && tag.lon != null && <MapsLinkButton lat={tag.lat} lon={tag.lon} />}
       </div>
     </Sheet>
   );

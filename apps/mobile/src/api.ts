@@ -13,14 +13,22 @@ import type {
   TagSnapshot,
 } from '@tagexplore/core';
 
+/** How long a read may take before it is given up on. */
+const READ_TIMEOUT_MS = 30_000;
+
 /**
  * The phone app's calls. Same server, same session cookie and same endpoints
  * as the desktop app, plus `/api/push/*`, which exists only for this app.
  */
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  // A read that hangs (a stalled server, a half-dead connection) fails after
+  // a while instead of leaving the screen waiting on it forever. Writes are
+  // left alone: some admin actions legitimately take a long time.
+  const isRead = !init?.method || init.method === 'GET';
   const res = await fetch(path, {
     ...init,
+    ...(isRead && !init?.signal ? { signal: AbortSignal.timeout(READ_TIMEOUT_MS) } : {}),
     headers: { ...(init?.body ? { 'content-type': 'application/json' } : {}), ...init?.headers },
   });
   if (!res.ok) {

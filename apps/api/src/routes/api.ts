@@ -22,6 +22,8 @@ export interface ApiDeps {
 const SERVER_STARTED_AT = Date.now();
 
 const DEFAULT_WINDOW_HOURS = 72;
+/** How long a live `/snapshots` answer is reused for — long enough to absorb every screen refetching at once. */
+const SNAPSHOT_CACHE_MS = 10_000;
 const MAX_WINDOW_DAYS = 365;
 /**
  * Roughly one point per two pixels on a wide chart. Past this, more points buy
@@ -83,6 +85,14 @@ export function bucketMinutesFor(from: number, to: number, floorMinutes: number)
 
 export function createApi(deps: ApiDeps): Hono<Env> {
   const api = new Hono<Env>();
+
+  // See `/snapshots`. Cleared for an org as soon as anything that changes its
+  // snapshots is announced; the short lifetime covers whatever isn't.
+  const snapshotCache = new Map<string, { at: number; body: unknown }>();
+  deps.bus.subscribeAll((event) => {
+    if (event.type !== 'readings' && event.type !== 'tags') return;
+    for (const key of snapshotCache.keys()) if (key.startsWith(`${event.orgId}|`)) snapshotCache.delete(key);
+  });
 
   /**
    * Everything below is organisation-scoped. A normal user may belong to
@@ -153,18 +163,37 @@ export function createApi(deps: ApiDeps): Hono<Env> {
     return c.json({ tags: deps.store.listOrgTags(orgId) });
   });
 
-  /** Latest state of every whitelisted tag heard in the window: the map and the sidebar. */
+  /**
+   * Latest state of every whitelisted tag heard in the window: the map and the sidebar.
+   *
+   * The live form (no `to`) is cached briefly per org and query. Both apps ask
+   * for a year-long window, which is a heavy synchronous query, and every open
+   * screen asks at once whenever a round lands or the server restarts — run
+   * one per screen and the whole server, static files included, stalls behind
+   * them. New readings or a tag switched on or off clear the org's entries.
+   */
   api.get('/snapshots', (c) => {
-    const window = readWindow(c.req.query(), Date.now());
+    const query = c.req.query();
+    const window = readWindow(query, Date.now());
     if ('error' in window) return c.json({ error: window.error }, 400);
 
-    const excludeDeviceImeis = parseExcludeDeviceImeis(c.req.query());
-    return c.json({
+    const orgId = c.get('orgId');
+    const excludeDeviceImeis = parseExcludeDeviceImeis(query);
+    const cacheKey =
+      query['to'] === undefined && query['from'] === undefined
+        ? `${orgId}|${query['hours'] ?? ''}|${[...(excludeDeviceImeis ?? [])].sort().join(',')}`
+        : null;
+    const cached = cacheKey ? snapshotCache.get(cacheKey) : undefined;
+    if (cached && Date.now() - cached.at < SNAPSHOT_CACHE_MS) return c.json(cached.body);
+
+    const body = {
       from: window.from,
       to: window.to,
-      snapshots: deps.store.tagSnapshots({ orgId: c.get('orgId'), ...window }, excludeDeviceImeis),
-      links: deps.store.linkReadings({ orgId: c.get('orgId'), ...window }, excludeDeviceImeis),
-    });
+      snapshots: deps.store.tagSnapshots({ orgId, ...window }, excludeDeviceImeis),
+      links: deps.store.linkReadings({ orgId, ...window }, excludeDeviceImeis),
+    };
+    if (cacheKey) snapshotCache.set(cacheKey, { at: Date.now(), body });
+    return c.json(body);
   });
 
   /** Raw GPS fixes in the window, for the density heatmap — not collapsed to one-per-tag like `/snapshots`. */

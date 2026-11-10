@@ -8,10 +8,28 @@
     <link
       href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap"
       rel="stylesheet"
+      media="print"
+      onload="this.media='all'"
     />
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      // A bundle that failed to load (a deploy landing mid-load, a dropped
+      // connection) leaves #root empty for good. Reload once if nothing has
+      // been drawn after 20s; main.tsx clears the flag once the app is running.
+      setTimeout(function () {
+        var root = document.getElementById('root');
+        if (!root || root.hasChildNodes()) return;
+        try {
+          if (sessionStorage.getItem('tx-boot-retry')) return;
+          sessionStorage.setItem('tx-boot-retry', '1');
+        } catch (e) {
+          return;
+        }
+        location.reload();
+      }, 20000);
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

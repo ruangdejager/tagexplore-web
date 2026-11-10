@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   allocateTagsToGeofences,
   checkedInTagIds,
-  geofenceTagCounts,
+  DISCOVERY_WINDOWS,
+  geofenceStats,
   type DeviceRow,
   type DiscoveryWindow,
   type GeofenceRegion,
@@ -19,6 +20,7 @@ import { CountPanel } from './components/CountPanel.js';
 import { DiscoveryRawModal } from './components/DiscoveryRawModal.js';
 import { DeviceCard } from './components/DeviceCard.js';
 import { DeviceList } from './components/DeviceList.js';
+import { LoadingScreen } from './components/LoadingScreen.js';
 import { LoginScreen } from './components/LoginScreen.js';
 import { MapLegend } from './components/MapLegend.js';
 import { MapView, type MarkerColorMode } from './components/MapView.js';
@@ -62,7 +64,7 @@ export function App(): JSX.Element | null {
   // refresh that turns out to be authed should never flash the login form
   // first, and one that turns out anonymous loses nothing by waiting the
   // one request it takes to find out.
-  if (auth.status === 'checking') return null;
+  if (auth.status === 'checking') return <LoadingScreen />;
   if (auth.status !== 'authed') {
     return <LoginScreen auth={auth} />;
   }
@@ -103,6 +105,8 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   // showing instead of the live state — null means live. Owned here, not
   // inside CountPanel, because it has to reach the map.
   const [historyAt, setHistoryAt] = useState<number | null>(null);
+  /** The geofence picked with "Highlight devices" — everything outside it greys out. */
+  const [highlightRegionId, setHighlightRegionId] = useState<string | null>(null);
   // Which round's raw data is open, if any. Held here rather than in CountPanel
   // so the overlay is a child of the page, not of the panel's own card — see
   // CountPanel's `onShowRaw`.
@@ -174,6 +178,7 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   // its history belongs to the org that was picked when it loaded.
   useEffect(() => {
     setHistoryAt(null);
+    setHighlightRegionId(null);
   }, [orgId]);
 
   // Fetches the whitelist's state as of the picked round — same shape as the
@@ -407,12 +412,14 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   // Every toggled-on tag lands in a geofence automatically (see
   // `allocateTagsToGeofences`), and each geofence's bubble counts the tags the
   // count panel itself counts — same set, same window, same round.
-  const geofenceCounts = useMemo(() => {
-    if (!geofencesView || geofences.length === 0) return null;
+  const geofenceInfo = useMemo(() => {
+    if (geofences.length === 0) return null;
     const refNow = historyAt ?? now;
     const allocations = allocateTagsToGeofences(mapToggledSnapshots, mapSourceDevices, geofences, discoveryWindow, refNow);
-    return geofenceTagCounts(allocations, geofences, checkedInTagIds(mapToggledSnapshots, discoveryWindow, refNow));
-  }, [geofencesView, geofences, mapToggledSnapshots, mapSourceDevices, discoveryWindow, historyAt, now]);
+    return geofenceStats(allocations, geofences, checkedInTagIds(mapToggledSnapshots, discoveryWindow, refNow));
+  }, [geofences, mapToggledSnapshots, mapSourceDevices, discoveryWindow, historyAt, now]);
+  // A geofence that has gone away (another org, a re-read feed) can't stay highlighted.
+  const activeHighlight = highlightRegionId !== null && geofenceInfo?.has(highlightRegionId) ? highlightRegionId : null;
   // What "Recentre" frames to on either map: every org tag's own position,
   // regardless of the list's toggles or search — unlike the global map's
   // "fit to shown", this is a fixed reference point, not a filtered one.
@@ -487,12 +494,12 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
   // Every hook above still runs on every render regardless — only the JSX
   // this returns is held back, so nothing half-loaded (the wrong org, an
   // empty unfitted map) is ever painted.
-  if (!dataReady) return null;
+  if (!dataReady) return <LoadingScreen />;
 
   return (
     <div id="app">
       <header>
-        <button className="mark" onClick={() => setFitNonce((n) => n + 1)} title="Fit the map to every tag shown">
+        <button className="mark" onClick={() => window.location.reload()} title="Reload the page">
           <img className="mark-logo" src="/farmranger-logo.svg" alt="" width="28" height="28" />
           Farmranger<span>·</span>Tags
         </button>
@@ -635,7 +642,10 @@ function AuthedApp({ auth }: { auth: ReturnType<typeof useAuth> }): JSX.Element 
         selectedDeviceImei={selectedDeviceImei}
         geofences={geofences}
         geofencesView={geofencesView}
-        geofenceCounts={geofenceCounts}
+        geofenceStats={geofenceInfo}
+        highlightRegionId={activeHighlight}
+        onHighlightChange={setHighlightRegionId}
+        windowLabel={DISCOVERY_WINDOWS.find((w) => w.value === discoveryWindow)?.label ?? ''}
         colorMode={colorMode}
         gpsWindow={discoveryWindow}
         historyAt={historyAt}

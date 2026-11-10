@@ -3,6 +3,7 @@ import {
   allocateTagsToGeofences,
   distanceToGeofenceEdge,
   geofenceCentroid,
+  geofenceLabelPoint,
   geofenceTagCounts,
   pointInGeofence,
   type DeviceRow,
@@ -85,7 +86,7 @@ describe('allocateTagsToGeofences', () => {
       [snap({ lat: -29, lon: 25, fixAt: ROUND })],
       [reader({ lat: -28.99, lon: 25, positionSource: 'own', positionAt: ROUND })],
     ).get('t1')!;
-    expect(r).toMatchObject({ regionId: 'a', reason: 'inside' });
+    expect(r).toMatchObject({ regionIds: ['a'], reason: 'inside' });
     expect(r.position?.source).toBe('tag-gps');
   });
 
@@ -94,7 +95,7 @@ describe('allocateTagsToGeofences', () => {
       [snap({ lat: -29, lon: 25, fixAt: ROUND - 86_400_000 })],
       [reader({ lat: -28.99, lon: 25, positionSource: 'own', positionAt: ROUND })],
     ).get('t1')!;
-    expect(r).toMatchObject({ regionId: 'b', reason: 'inside' });
+    expect(r).toMatchObject({ regionIds: ['b'], reason: 'inside' });
     expect(r.position?.source).toBe('reader');
   });
 
@@ -104,30 +105,30 @@ describe('allocateTagsToGeofences', () => {
       [reader({ lat: -28.99, lon: 25, positionSource: 'stale', positionAt: ROUND - 86_400_000 })],
     ).get('t1')!;
     expect(tagNewer.position?.source).toBe('tag-last-gps');
-    expect(tagNewer.regionId).toBe('a');
+    expect(tagNewer.regionIds).toEqual(['a']);
 
     const readerNewer = run(
       [snap({ lat: -29, lon: 25, fixAt: ROUND - 86_400_000 })],
       [reader({ lat: -28.99, lon: 25, positionSource: 'stale', positionAt: ROUND - 3_600_000 })],
     ).get('t1')!;
     expect(readerNewer.position?.source).toBe('reader-last');
-    expect(readerNewer.regionId).toBe('b');
+    expect(readerNewer.regionIds).toEqual(['b']);
   });
 
   it('puts a tag within 50 m outside into the nearest geofence', () => {
     // ~22 m south of fence a.
     const r = run([snap({ lat: -29.0012, lon: 25, fixAt: ROUND })], []).get('t1')!;
-    expect(r).toMatchObject({ regionId: 'a', reason: 'nearest' });
+    expect(r).toMatchObject({ regionIds: ['a'], reason: 'nearest' });
   });
 
   it('leaves out a tag whose own fix is 50 m or more outside every geofence', () => {
     const r = run([snap({ lat: -29.003, lon: 25, fixAt: ROUND })], []).get('t1')!;
-    expect(r).toMatchObject({ regionId: null, reason: 'outside' });
+    expect(r).toMatchObject({ regionIds: [], reason: 'outside' });
   });
 
   it('never leaves out a tag placed by its reader, however far', () => {
     const r = run([snap({})], [reader({ lat: -29.05, lon: 25, positionSource: 'own', positionAt: ROUND })]).get('t1')!;
-    expect(r).toMatchObject({ regionId: 'a', reason: 'nearest' });
+    expect(r).toMatchObject({ regionIds: ['a'], reason: 'nearest' });
   });
 
   it('counts only the tags passed as counted', () => {
@@ -142,5 +143,40 @@ describe('allocateTagsToGeofences', () => {
     const counts = geofenceTagCounts(alloc, fences, new Set(['x']));
     expect(counts.get('a')).toBe(1);
     expect(counts.get('b')).toBe(0);
+  });
+
+  it('counts a tag inside two overlapping geofences in both', () => {
+    // A second square shifted half-way east overlaps fence a.
+    const east = SQUARE.map(([lat, lon]) => [lat, lon + 0.001] as [number, number]);
+    const fences = [fence('a'), fence('c', east)];
+    const alloc = allocateTagsToGeofences([snap({ lat: -29, lon: 25.0005, fixAt: ROUND })], [], fences, 'latest', NOW);
+    expect(alloc.get('t1')!.regionIds.sort()).toEqual(['a', 'c']);
+    const counts = geofenceTagCounts(alloc, fences, new Set(['t1']));
+    expect(counts.get('a')).toBe(1);
+    expect(counts.get('c')).toBe(1);
+  });
+});
+
+describe('geofenceLabelPoint', () => {
+  it('keeps the centroid when it is inside', () => {
+    const [lat, lon] = geofenceLabelPoint(SQUARE)!;
+    expect(lat).toBeCloseTo(-29, 6);
+    expect(lon).toBeCloseTo(25, 6);
+  });
+
+  it('moves the point inside a C-shaped geofence whose centroid falls outside', () => {
+    // A "C" opening east: the centroid lands in the empty notch.
+    const C: Array<[number, number]> = [
+      [-29.003, 24.997],
+      [-29.003, 25.003],
+      [-29.002, 25.003],
+      [-29.002, 24.998],
+      [-28.998, 24.998],
+      [-28.998, 25.003],
+      [-28.997, 25.003],
+      [-28.997, 24.997],
+    ];
+    expect(pointInGeofence(geofenceCentroid(C)!, C)).toBe(false);
+    expect(pointInGeofence(geofenceLabelPoint(C)!, C)).toBe(true);
   });
 });

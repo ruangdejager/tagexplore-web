@@ -5,8 +5,15 @@ import 'leaflet/dist/leaflet.css';
 import {
   allocateTagsToGeofences,
   checkedInTagIds,
-  geofenceCentroid,
-  geofenceTagCounts,
+  DISCOVERY_WINDOWS,
+  geofenceAreaSquareMeters,
+  geofenceLabelPoint,
+  geofenceStats,
+  GPS_FIX_COLOR,
+  GPS_FIX_LEGEND,
+  gpsFixBand,
+  pointInGeofence,
+  type GeofenceStats,
   type DeviceRow,
   type DiscoveryWindow,
   type GeofenceRegion,
@@ -20,7 +27,21 @@ import type { OrgData } from '../useOrgData.js';
 import { CountBlock } from './CountBlock.js';
 import { FunctionsBlock, HEATMAP_HOURS, NO_MAP_FUNCTIONS, normaliseMapFunctions, type MapFunctions } from './FunctionsBlock.js';
 
-const COLOR = { alert: '#c13615', checkedIn: '#4fbf8b', notCheckedIn: '#9aa08c' } as const;
+/** Outline colour for a geofence the feed sent without one. */
+const GEOFENCE_DEFAULT_COLOR = '#E9AE2F';
+/** Tags outside the highlighted geofence. */
+const DIMMED_COLOR = '#5A5E58';
+const BUBBLE_SIZE = 38;
+
+/** A geofence's count bubble: grey, white number, a thick brim in the geofence's own colour. */
+function geofenceCountIcon(count: number, color: string): L.DivIcon {
+  return L.divIcon({
+    className: 'geofence-count-wrap',
+    html: `<span class="geofence-count" style="border-color:${color}">${count}</span>`,
+    iconSize: [BUBBLE_SIZE, BUBBLE_SIZE],
+    iconAnchor: [BUBBLE_SIZE / 2, BUBBLE_SIZE / 2],
+  });
+}
 const SOUTH_AFRICA: [number, number] = [-28.8, 24.5];
 const FOCUS_ZOOM = 17;
 /** Same look as the desktop heatmap, so the two read the same density the same way. */
@@ -29,10 +50,10 @@ const LINK_COLOR = '#4FBF8B';
 /** One push of the ball along a link line, origin to tag, as on the desktop. */
 const LINK_PERIOD_MS = 2000;
 
-function deviceIcon(source: DeviceRow['positionSource']): L.DivIcon {
+function deviceIcon(source: DeviceRow['positionSource'], dimmed = false): L.DivIcon {
   const variant = source === 'stale' ? ' stale' : source === 'linked-tag' ? ' via-tag' : '';
   return L.divIcon({
-    className: `device-marker-wrap${variant}`,
+    className: `device-marker-wrap${variant}${dimmed ? ' dimmed' : ''}`,
     html: '<span class="device-marker-ping"></span><span class="device-marker-dot"></span>',
     iconSize: [20, 20],
     iconAnchor: [10, 10],
@@ -47,9 +68,9 @@ function deviceIcon(source: DeviceRow['positionSource']): L.DivIcon {
  * switching back is instant and "Show on map" jumps straight to the tag
  * instead of rebuilding the map and animating across the country.
  *
- * Dots carry no labels; tapping one opens the tag's card. Colour follows the
- * count's window, as on the desktop: green for a tag heard in that window,
- * grey for one that wasn't, red for a tag in alert.
+ * Dots carry no labels; tapping one opens the tag's card. Colour is the age of
+ * the tag's GPS fix (see `gpsFixBand`, and the Legend button); a tag in alert
+ * is drawn larger, with a white ring, on top of the others.
  */
 export function MapTab(props: {
   orgId: string;
@@ -93,9 +114,20 @@ export function MapTab(props: {
   const [geofences, setGeofences] = useState<GeofenceRegion[] | null>(null);
   const [heatPoints, setHeatPoints] = useState<GpsPoint[] | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const [legendOpen, setLegendOpen] = useState(false);
+  /** The geofence whose count bubble was tapped, for its info box. */
+  const [geofencePopup, setGeofencePopup] = useState<string | null>(null);
+  /** The geofence in highlight view: only it is drawn, everything outside greys out. */
+  const [highlightRegionId, setHighlightRegionId] = useState<string | null>(null);
+  const onBubble = useRef<(regionId: string) => void>(() => undefined);
+  onBubble.current = (regionId) => setGeofencePopup(regionId);
 
   useEffect(() => setNow(Date.now()), [data.updatedAt]);
-  useEffect(() => setHistoryAt(null), [orgId]);
+  useEffect(() => {
+    setHistoryAt(null);
+    setHighlightRegionId(null);
+    setGeofencePopup(null);
+  }, [orgId]);
 
   useEffect(() => {
     if (historyAt === null) {
@@ -174,11 +206,18 @@ export function MapTab(props: {
   // Every shown tag lands in a geofence automatically (see
   // `allocateTagsToGeofences`), and each geofence's bubble counts what the
   // count block counts — same as the desktop.
-  const geofenceCounts = useMemo(() => {
-    if (!showGeofences || !geofences || geofences.length === 0) return null;
+  const geofenceInfo = useMemo(() => {
+    if (!geofences || geofences.length === 0) return null;
     const allocations = allocateTagsToGeofences(shown, roundDevices, geofences, windowChoice, refNow);
-    return geofenceTagCounts(allocations, geofences, checkedIn);
-  }, [showGeofences, geofences, shown, roundDevices, windowChoice, refNow, checkedIn]);
+    return geofenceStats(allocations, geofences, checkedIn);
+  }, [geofences, shown, roundDevices, windowChoice, refNow, checkedIn]);
+  const highlightFence =
+    highlightRegionId !== null ? (geofences?.find((g) => g.regionId === highlightRegionId) ?? null) : null;
+  const highlightTagIds = useMemo(
+    () => (highlightRegionId !== null ? (geofenceInfo?.get(highlightRegionId)?.tagIds ?? new Set<string>()) : null),
+    [highlightRegionId, geofenceInfo],
+  );
+  const latestRoundIds = useMemo(() => checkedInTagIds(shown, 'latest', refNow), [shown, refNow]);
 
   useEffect(() => {
     if (!el.current) return;
@@ -188,6 +227,10 @@ export function MapTab(props: {
       attribution: 'Esri, Maxar',
     }).addTo(m);
     svgRenderer.current = L.svg({ padding: 0.5 });
+    // Under the overlay pane (400) the tag dots draw in, so a tag is always on
+    // top of a geofence's count bubble. The SVG pane only takes taps on its
+    // own shapes, so a bubble is still tappable wherever no dot covers it.
+    m.createPane('geofenceCounts').style.zIndex = '390';
     // Bottom to top: geofences, link lines, tag dots, readers.
     geofenceLayer.current = L.layerGroup();
     linkLayer.current = L.layerGroup();
@@ -215,18 +258,21 @@ export function MapTab(props: {
     if (!m || !group) return;
     group.clearLayers();
     const points: L.LatLngExpression[] = [];
-    // Drawn grey first and red last, so an alert is never hidden under another dot.
-    const order = (s: TagSnapshot): number => (historyAt === null && alerting.has(s.tagId) ? 2 : checkedIn.has(s.tagId) ? 1 : 0);
+    // Dimmed first, alerts last, so an alert is never hidden under another dot.
+    const order = (s: TagSnapshot): number =>
+      highlightTagIds && !highlightTagIds.has(s.tagId) ? 0 : historyAt === null && alerting.has(s.tagId) ? 2 : 1;
     for (const snap of [...shown].sort((a, b) => order(a) - order(b))) {
       if (snap.lat === null || snap.lon === null) continue;
       points.push([snap.lat, snap.lon]);
       const isAlert = historyAt === null && alerting.has(snap.tagId);
+      const dimmed = highlightTagIds !== null && !highlightTagIds.has(snap.tagId);
       L.circleMarker([snap.lat, snap.lon], {
         radius: isAlert ? 7 : 5.5,
-        color: '#12140f',
-        weight: 1.5,
-        fillColor: isAlert ? COLOR.alert : checkedIn.has(snap.tagId) ? COLOR.checkedIn : COLOR.notCheckedIn,
-        fillOpacity: 0.95,
+        color: isAlert && !dimmed ? '#ffffff' : '#12140f',
+        weight: isAlert && !dimmed ? 2 : 1.5,
+        opacity: dimmed ? 0.4 : 1,
+        fillColor: dimmed ? DIMMED_COLOR : GPS_FIX_COLOR[gpsFixBand(snap, latestRoundIds, refNow)],
+        fillOpacity: dimmed ? 0.35 : 0.95,
       })
         .on('click', () => onOpen.current(snap.tagId, historyAt !== null ? snap : undefined))
         .addTo(group);
@@ -238,7 +284,7 @@ export function MapTab(props: {
       m.fitBounds(L.latLngBounds(points), { padding: [40, 40], maxZoom: 16, animate: false });
       fittedOrg.current = orgId;
     }
-  }, [shown, checkedIn, alerting, historyAt, orgId, data.loadedOrgId]);
+  }, [shown, latestRoundIds, refNow, alerting, historyAt, orgId, data.loadedOrgId, highlightTagIds]);
 
   // "Show on map": straight to the tag, no fly-over, with a short pulse so the
   // eye finds it.
@@ -297,39 +343,37 @@ export function MapTab(props: {
     const group = geofenceLayer.current;
     if (!m || !group) return;
     group.clearLayers();
-    if (!showGeofences || !geofences) {
+    if ((!showGeofences && !highlightFence) || !geofences) {
       if (m.hasLayer(group)) m.removeLayer(group);
       return;
     }
-    for (const fence of geofences) {
+    // Highlight view shows its own geofence and nothing else.
+    for (const fence of highlightFence ? [highlightFence] : geofences) {
       if (fence.coordinates.length < 3) continue;
       L.polygon(fence.coordinates, {
-        color: fence.color ?? '#E9AE2F',
+        color: fence.color ?? GEOFENCE_DEFAULT_COLOR,
         weight: 2,
         fillOpacity: 0.06,
         interactive: false,
         renderer: svgRenderer.current ?? undefined,
       }).addTo(group);
-      const count = geofenceCounts?.get(fence.regionId);
-      const centre = count === undefined ? null : geofenceCentroid(fence.coordinates);
+      const count = geofenceInfo?.get(fence.regionId)?.counted;
+      const centre = count === undefined ? null : geofenceLabelPoint(fence.coordinates);
       if (count !== undefined && centre) {
         L.marker(centre, {
-          icon: L.divIcon({
-            className: 'geofence-count-wrap',
-            html: `<span class="geofence-count">${count}</span>`,
-            iconSize: [34, 34],
-            iconAnchor: [17, 17],
-          }),
-          interactive: false,
+          icon: geofenceCountIcon(count, fence.color ?? GEOFENCE_DEFAULT_COLOR),
+          pane: 'geofenceCounts',
           keyboard: false,
-        }).addTo(group);
+        })
+          .on('click', () => onBubble.current(fence.regionId))
+          .addTo(group);
       }
     }
     if (!m.hasLayer(group)) group.addTo(m);
     group.eachLayer((l) => {
       if (l instanceof L.Polygon) l.bringToBack();
     });
-  }, [showGeofences, geofences, geofenceCounts]);
+  }, [showGeofences, geofences, geofenceInfo, highlightFence]);
 
   // Link view: a faint line from each reader (or the tag a reading relayed
   // through) to the tag it heard in the latest round, with a ball pushed along
@@ -359,6 +403,8 @@ export function MapTab(props: {
     for (const reading of shownLinks) {
       const tag = byId.get(reading.tagId);
       if (!tag || tag.lat === null || tag.lon === null) continue;
+      // In highlight view only the geofence's own tags pulse.
+      const outsideHighlight = highlightTagIds !== null && !highlightTagIds.has(tag.tagId);
       const relay = reading.linkId ? byId.get(reading.linkId) : undefined;
       let origin: { lat: number; lon: number } | undefined =
         relay && relay.lat !== null && relay.lon !== null
@@ -374,10 +420,11 @@ export function MapTab(props: {
       L.polyline([from, to], {
         color: LINK_COLOR,
         weight: 1.5,
-        opacity: 0.3,
+        opacity: outsideHighlight ? 0.1 : 0.3,
         interactive: false,
         renderer: svgRenderer.current ?? undefined,
       }).addTo(group);
+      if (outsideHighlight) continue;
       const ball = L.marker(from, {
         icon: L.divIcon({ className: 'link-ball-wrap', html: '<span class="link-ball"></span>', iconSize: [10, 10], iconAnchor: [5, 5] }),
         interactive: false,
@@ -387,14 +434,15 @@ export function MapTab(props: {
     }
 
     for (const d of anchorable) {
-      L.marker([d.lat, d.lon], { icon: deviceIcon(d.positionSource), zIndexOffset: 1000, keyboard: false })
+      const dimmed = highlightFence !== null && !pointInGeofence([d.lat, d.lon], highlightFence.coordinates);
+      L.marker([d.lat, d.lon], { icon: deviceIcon(d.positionSource, dimmed), zIndexOffset: 1000, keyboard: false })
         .bindTooltip(d.label ? `${d.label} · reader` : `Reader ${d.imei}`, { direction: 'top', offset: [0, -10] })
         .addTo(readers);
     }
 
     if (!m.hasLayer(group)) group.addTo(m);
     if (!m.hasLayer(readers)) readers.addTo(m);
-  }, [linksOn, shown, shownLinks, shownDevices]);
+  }, [linksOn, shown, shownLinks, shownDevices, highlightTagIds, highlightFence]);
 
   // The balls' animation runs only while the map is on screen.
   useEffect(() => {
@@ -439,6 +487,113 @@ export function MapTab(props: {
       )}
       </div>
       {data.updatedAt !== null && !withFix && !fns.heatmap && <div className="map-note">No tag has a GPS fix to show.</div>}
+
+      {highlightFence && (
+        <div className="highlight-bar">
+          <span>
+            Highlighting <b>{highlightFence.name}</b>
+          </span>
+          <button type="button" onClick={() => setHighlightRegionId(null)}>
+            Exit highlight view
+          </button>
+        </div>
+      )}
+
+      {!fns.heatmap && (
+        <button type="button" className="legend-button" onClick={() => setLegendOpen((v) => !v)} aria-expanded={legendOpen}>
+          Legend <span className="legend-i">i</span>
+        </button>
+      )}
+      {legendOpen && (
+        <div className="map-popup legend-popup" role="dialog" aria-label="Legend">
+          <div className="map-popup-head">
+            <strong>GPS fix</strong>
+            <button type="button" className="map-popup-x" aria-label="Close" onClick={() => setLegendOpen(false)}>
+              ×
+            </button>
+          </div>
+          <ul className="legend-list">
+            {GPS_FIX_LEGEND.map(({ band, label }) => (
+              <li key={band}>
+                <i style={{ background: GPS_FIX_COLOR[band] }} />
+                {label}
+              </li>
+            ))}
+            <li>
+              <i className="legend-alert-ring" />
+              In alert (larger, white ring)
+            </li>
+          </ul>
+        </div>
+      )}
+
+      {geofencePopup !== null && (
+        <GeofencePopup
+          fence={geofences?.find((g) => g.regionId === geofencePopup) ?? null}
+          stats={geofenceInfo?.get(geofencePopup) ?? null}
+          readersInside={
+            shownDevices.filter((d) => {
+              const fence = geofences?.find((g) => g.regionId === geofencePopup);
+              return fence && d.lat !== null && d.lon !== null && pointInGeofence([d.lat, d.lon], fence.coordinates);
+            }).length
+          }
+          windowLabel={DISCOVERY_WINDOWS.find((w) => w.value === windowChoice)?.label ?? ''}
+          highlighted={highlightRegionId === geofencePopup}
+          onHighlight={(on) => {
+            setHighlightRegionId(on ? geofencePopup : null);
+            setGeofencePopup(null);
+          }}
+          onClose={() => setGeofencePopup(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+
+/** The box a geofence's count bubble opens: its name, how its tags were placed, and highlight view. */
+function GeofencePopup(props: {
+  fence: GeofenceRegion | null;
+  stats: GeofenceStats | null;
+  readersInside: number;
+  windowLabel: string;
+  highlighted: boolean;
+  onHighlight: (on: boolean) => void;
+  onClose: () => void;
+}): JSX.Element | null {
+  const { fence, stats } = props;
+  if (!fence) return null;
+  const hectares = geofenceAreaSquareMeters(fence.coordinates) / 10_000;
+  const rows: Array<[string, string | number]> = [
+    [`Counted · ${props.windowLabel}`, stats?.counted ?? 0],
+    ['Tags placed here', stats?.placed ?? 0],
+    ['Inside the boundary', stats?.inside ?? 0],
+    ['Nearest geofence (just outside)', stats?.nearest ?? 0],
+    ['By tag GPS / by reader', `${stats?.byTagGps ?? 0} / ${stats?.byReader ?? 0}`],
+    ...((stats?.shared ?? 0) > 0 ? [['Also in an overlapping geofence', stats!.shared] as [string, number]] : []),
+    ['Readers inside', props.readersInside],
+    ['Area', `${hectares >= 100 ? Math.round(hectares).toLocaleString('en-ZA') : hectares.toFixed(1)} ha`],
+  ];
+  return (
+    <div className="map-popup geofence-popup" role="dialog" aria-label={fence.name}>
+      <div className="map-popup-head">
+        <i className="geofence-swatch" style={{ background: fence.color ?? GEOFENCE_DEFAULT_COLOR }} aria-hidden="true" />
+        <strong>{fence.name}</strong>
+        <button type="button" className="map-popup-x" aria-label="Close" onClick={props.onClose}>
+          ×
+        </button>
+      </div>
+      <dl className="map-popup-facts">
+        {rows.map(([k, v]) => (
+          <div key={k}>
+            <dt>{k}</dt>
+            <dd>{v}</dd>
+          </div>
+        ))}
+      </dl>
+      <button type="button" className="primary" onClick={() => props.onHighlight(!props.highlighted)}>
+        {props.highlighted ? 'Exit highlight view' : 'Highlight devices'}
+      </button>
     </div>
   );
 }

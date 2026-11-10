@@ -54,14 +54,22 @@ export interface AdminUserRow {
   createdAt: number;
 }
 
+/** How long a read may take before it is given up on. */
+const READ_TIMEOUT_MS = 30_000;
+
 /**
  * Every call goes through here so an error response becomes a thrown Error
  * carrying the server's own message — the UI shows that text rather than
  * inventing its own wording for a failure it does not understand.
  */
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  // A read that hangs (a stalled server, a half-dead connection) fails after
+  // a while instead of leaving the screen waiting on it forever. Writes are
+  // left alone: some admin actions legitimately take a long time.
+  const isRead = !init?.method || init.method === 'GET';
   const res = await fetch(path, {
     ...init,
+    ...(isRead && !init?.signal ? { signal: AbortSignal.timeout(READ_TIMEOUT_MS) } : {}),
     headers: { ...(init?.body ? { 'content-type': 'application/json' } : {}), ...init?.headers },
   });
 

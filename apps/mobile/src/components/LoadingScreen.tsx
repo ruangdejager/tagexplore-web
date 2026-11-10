@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 
 /** How long the screen takes to fade once loading is done. Matches the CSS. */
 const FADE_MS = 350;
+/** Past this, loading has stalled (a slow server, a dropped request) and a Reload button is offered. */
+const SLOW_MS = 15_000;
 
 /**
  * The Farmranger logo inside a turning ring, over the whole app. Shown while
@@ -12,6 +14,14 @@ const FADE_MS = 350;
  */
 export function LoadingScreen({ active, label }: { active: boolean; label?: string | undefined }): JSX.Element | null {
   const [mounted, setMounted] = useState(active);
+  const [slow, setSlow] = useState(false);
+
+  useEffect(() => {
+    setSlow(false);
+    if (!active) return;
+    const t = setTimeout(() => setSlow(true), SLOW_MS);
+    return () => clearTimeout(t);
+  }, [active]);
 
   useEffect(() => {
     if (active) {
@@ -34,6 +44,14 @@ export function LoadingScreen({ active, label }: { active: boolean; label?: stri
         <img className="loading-logo" src="/m/farmranger-logo.svg" alt="" width="84" height="84" />
       </div>
       <p className="loading-label">{label ?? 'Loading…'}</p>
+      {slow && (
+        <div className="loading-slow">
+          <p>This is taking longer than it should.</p>
+          <button type="button" className="secondary" onClick={() => window.location.reload()}>
+            Reload
+          </button>
+        </div>
+      )}
     </div>
   );
 }

@@ -1662,7 +1662,9 @@ footer {
   opacity: 1;
 }
 
-/* Count of tags allocated to a geofence, centred in it. */
+/* Count of tags placed in a geofence, inside it: grey, white number, a thick
+   brim in the geofence's own colour (set inline). Sits in a pane under the
+   tag markers so a tag is always drawn on top of it. */
 .geofence-count-wrap {
   background: none;
   border: none;
@@ -1671,17 +1673,75 @@ footer {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 34px;
-  height: 34px;
+  box-sizing: border-box;
+  width: 38px;
+  height: 38px;
   border-radius: 50%;
-  background: rgba(90, 94, 88, 0.92);
+  border: 4px solid #e9ae2f;
+  background: rgba(90, 94, 88, 0.94);
   color: #fff;
+  font-family: var(--body);
   font-weight: 700;
   font-size: 14px;
   line-height: 1;
   font-variant-numeric: tabular-nums;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
-  pointer-events: none;
+}
+
+/* The box a count bubble opens. */
+.geofence-info {
+  position: absolute;
+  z-index: 700;
+  width: 280px;
+}
+.geofence-info-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.geofence-info-head i {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+.geofence-info-head h3 {
+  font-size: 17px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.geofence-info .card-actions .pill {
+  flex: 1;
+}
+.geofence-info dd {
+  white-space: nowrap;
+}
+
+/* Highlight view: the bar that says which geofence and gets you out. */
+.highlight-bar {
+  position: absolute;
+  top: 14px;
+  right: 120px;
+  z-index: 650;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px 8px 14px;
+  background: rgba(27, 30, 23, 0.94);
+  border: 1px solid var(--warn);
+  border-radius: 3px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.device-marker-wrap.dimmed {
+  opacity: 0.3;
+  filter: grayscale(1);
+}
+.device-marker-wrap.dimmed .device-marker-ping {
+  display: none;
 }
 
 /* Active / Past switch inside the expanded alerts card. */
@@ -1729,4 +1789,190 @@ footer {
   text-align: right;
   white-space: nowrap;
   font-size: 10.5px;
+}
+
+/* "Open in maps" → Open / Copy link, and the no-fix note in its place. */
+.maps-choice {
+  flex: 1;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.maps-choice .pill {
+  flex: 1;
+  text-align: center;
+  text-decoration: none;
+}
+.maps-no-fix {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--warn);
+  border-radius: 2px;
+  color: var(--warn);
+  font-size: 12px;
+}
+
+/* Alert rows are buttons now: clicking one opens its details. */
+button.alert-row {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+}
+button.alert-row:hover {
+  background: rgba(193, 54, 21, 0.16);
+}
+button.alert-row.alert-row-past:hover {
+  background: rgba(154, 160, 140, 0.16);
+}
+.alert-detail {
+  margin-top: 10px;
+  padding: 10px 10px 2px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: rgba(34, 38, 29, 0.6);
+}
+.alert-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+.alert-detail dl {
+  margin-bottom: 10px;
+}
+.alert-detail dd.alert-message {
+  white-space: normal;
+}
+.alert-detail .card-actions {
+  margin-bottom: 8px;
+}
+.alert-detail .card-actions .pill {
+  flex: 1;
+  text-align: center;
+}
+
+/* ---- Loading screen (same as the phone app's) ---- */
+
+.loading-screen {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 100vh;
+  z-index: 3000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+  padding: 24px;
+  background: var(--bg);
+  transition: opacity 350ms ease;
+}
+
+.loading-screen.leaving {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.loading-mark {
+  position: relative;
+  width: 132px;
+  height: 132px;
+  display: grid;
+  place-items: center;
+}
+
+.loading-logo {
+  position: relative;
+  border-radius: 50%;
+  animation: loading-breathe 2.4s ease-in-out infinite;
+}
+
+.loading-ring {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  animation: loading-spin 1.4s linear infinite;
+}
+
+.loading-ring circle {
+  fill: none;
+  stroke-width: 5;
+}
+
+.loading-ring-track {
+  stroke: var(--line);
+}
+
+/* The arc grows and shrinks as it turns, like the iOS spinner's rhythm. */
+.loading-ring-arc {
+  stroke: var(--veld-lit);
+  stroke-linecap: round;
+  stroke-dasharray: 1 340;
+  transform-origin: 60px 60px;
+  animation: loading-dash 1.4s ease-in-out infinite;
+}
+
+.loading-label {
+  margin: 0;
+  font-family: var(--display);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+
+@keyframes loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes loading-dash {
+  0% {
+    stroke-dasharray: 1 340;
+    stroke-dashoffset: 0;
+  }
+  50% {
+    stroke-dasharray: 200 340;
+    stroke-dashoffset: -40;
+  }
+  100% {
+    stroke-dasharray: 200 340;
+    stroke-dashoffset: -339;
+  }
+}
+
+@keyframes loading-breathe {
+  50% {
+    transform: scale(0.95);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loading-ring,
+  .loading-ring-arc,
+  .loading-logo {
+    animation-duration: 3s;
+  }
+}
+
+
+.loading-slow {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  color: var(--ink-dim);
+  text-align: center;
+}
+.loading-slow p {
+  margin: 0;
 }

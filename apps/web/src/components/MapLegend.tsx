@@ -1,4 +1,4 @@
-import { AGE_COLOR, DISCOVERY_WINDOWS, type DiscoveryWindow, type PositionAge } from '@tagexplore/core';
+import { AGE_COLOR, DISCOVERY_WINDOWS, GPS_FIX_COLOR, GPS_FIX_LEGEND, type DiscoveryWindow } from '@tagexplore/core';
 import type { MarkerColorMode } from './MapView.js';
 
 interface Props {
@@ -9,20 +9,6 @@ interface Props {
    *  needs it too. */
   gpsWindow: DiscoveryWindow;
 }
-
-/**
- * "No fix" is a real tag state, but never a marker — that tag has no position
- * to plot — so it has no place in a legend of marker colours. Shorter than
- * core's own AGE_LABEL (which is also used in running prose elsewhere, where
- * "Under 4h" reads better than "< 4h") — this legend is a compact key, not a
- * sentence.
- */
-const AGE_LEGEND: Array<{ age: PositionAge; label: string }> = [
-  { age: 'live', label: '< 4h' },
-  { age: 'recent', label: '< 12h' },
-  { age: 'stale', label: '< 24h' },
-  { age: 'old', label: '> 24h' },
-];
 
 /**
  * Three legends sharing one corner, each also a button: click one to colour
@@ -37,9 +23,10 @@ export function MapLegend({ mode, onChange, gpsWindow }: Props): JSX.Element {
     <div className="legend-stack">
       <button className="legend" data-active={mode === 'age' ? '1' : '0'} onClick={() => onChange('age')}>
         <div className="legend-title">Gps age</div>
-        {AGE_LEGEND.map(({ age, label }) => (
-          <div key={age}>
-            <i style={{ background: AGE_COLOR[age] }} />
+        {/* "No fix" has no row: a tag without one has no marker to colour. */}
+        {GPS_FIX_LEGEND.map(({ band, label }) => (
+          <div key={band}>
+            <i style={{ background: GPS_FIX_COLOR[band] }} />
             {label}
           </div>
         ))}

@@ -219,6 +219,24 @@ describe('alert notifier', () => {
     expect(store.listAlertHistory(ORG)).toHaveLength(2);
   });
 
+  it('records where an alert was when it had a fix, and keeps it once cleared', async () => {
+    const n = notifier();
+    store.writeReadings([{ ...reading('AAAA', T0, 1), lat: -29.1, lon: 25.2, hasGps: true }], []);
+    await n.checkOrg(ORG, T0);
+    expect(store.listAlertHistory(ORG, { status: 'active' })).toMatchObject([{ lat: -29.1, lon: 25.2, fixAt: T0 }]);
+
+    store.writeReadings([reading('AAAA', T0 + HOUR, 0)], []);
+    await n.checkOrg(ORG, T0 + HOUR);
+    expect(store.listAlertHistory(ORG, { status: 'past' })).toMatchObject([{ lat: -29.1, lon: 25.2, fixAt: T0 }]);
+  });
+
+  it('records no position for a still alert with no fix since it went still', async () => {
+    const n = notifier();
+    store.writeReadings([reading('AAAA', T0, 1)], []);
+    await n.checkOrg(ORG, T0);
+    expect(store.listAlertHistory(ORG, { status: 'active' })).toMatchObject([{ lat: null, lon: null, fixAt: null }]);
+  });
+
   it('does not re-notify a tag flapping between moving and still inside the cooldown', async () => {
     const n = notifier();
     store.writeReadings([reading('AAAA', T0, 1)], []);

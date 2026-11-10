@@ -52,3 +52,48 @@ export function formatAge(ms: number): string {
   const remHours = hours % 24;
   return remHours ? `${days}d ${remHours}h` : `${days}d`;
 }
+
+/**
+ * The map's "GPS fix" colouring, shared by the desktop's GPS-age legend and
+ * the mobile map: green when the tag's fix came in the latest discovery round
+ * itself, then light blue under 4h, yellow 4–12h, orange 12–24h and red past
+ * 24h. Grey only for a tag that has never had a fix.
+ */
+export type GpsFixBand = 'latest' | 'under4h' | 'under12h' | 'under24h' | 'over24h' | 'none';
+
+export const GPS_FIX_COLOR: Record<GpsFixBand, string> = {
+  latest: '#4FBF8B',
+  under4h: '#6EC3F2',
+  under12h: '#E9D02F',
+  under24h: '#E2731B',
+  over24h: '#C13615',
+  none: '#9AA08C',
+};
+
+/** Legend rows, in order. "No fix" is left out: a tag without one has no dot to colour. */
+export const GPS_FIX_LEGEND: Array<{ band: GpsFixBand; label: string }> = [
+  { band: 'latest', label: 'Fix in latest discovery' },
+  { band: 'under4h', label: '< 4h' },
+  { band: 'under12h', label: '4h – 12h' },
+  { band: 'under24h', label: '12h – 24h' },
+  { band: 'over24h', label: '> 24h' },
+];
+
+/**
+ * `latestRoundIds` is the set of tags in the latest discovery round being
+ * shown (see `checkedInTagIds(…, 'latest', …)`); a tag in it whose newest
+ * reading carried the fix is green.
+ */
+export function gpsFixBand(
+  snap: { tagId: string; fixAt: number | null; lastSeenAt: number },
+  latestRoundIds: Set<string>,
+  nowMs: number,
+): GpsFixBand {
+  if (snap.fixAt === null) return 'none';
+  if (latestRoundIds.has(snap.tagId) && snap.fixAt >= snap.lastSeenAt) return 'latest';
+  const age = nowMs - snap.fixAt;
+  if (age < 4 * 3_600_000) return 'under4h';
+  if (age < 12 * 3_600_000) return 'under12h';
+  if (age < 24 * 3_600_000) return 'under24h';
+  return 'over24h';
+}

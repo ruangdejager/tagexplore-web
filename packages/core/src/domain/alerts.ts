@@ -40,6 +40,15 @@ export interface TagAlert {
    * or null when none has arrived since. Null is what the apps show as "No fix".
    */
   fixAfterStill?: number | null;
+  /**
+   * Where the alert is, when there is a fix to say so: for `still`, the fix
+   * taken at or after the tag went still; for `stale`, the tag's last fix.
+   * Null for a still tag with no fix since, or a tag that never had one.
+   */
+  lat: number | null;
+  lon: number | null;
+  /** When that fix was taken. */
+  fixAt: number | null;
 }
 
 /**
@@ -53,6 +62,10 @@ export interface AlertHistoryEntry {
   kind: TagAlertKind;
   startedAt: number;
   endedAt: number | null;
+  /** The alert's position, as last recorded while it was active — null when it had no fix. */
+  lat: number | null;
+  lon: number | null;
+  fixAt: number | null;
 }
 
 /**
@@ -78,16 +91,28 @@ export function computeTagAlerts(snapshots: TagSnapshot[], nowMs: number): TagAl
   const alerts: TagAlert[] = [];
   for (const snap of snapshots) {
     if (snap.movementState === 1) {
+      const fix = fixAfterStill(snap);
       alerts.push({
         tagId: snap.tagId,
         label: snap.label,
         kind: 'still',
         lastSeenAt: snap.lastSeenAt,
         stillSince: snap.stillSince ?? snap.lastSeenAt,
-        fixAfterStill: fixAfterStill(snap),
+        fixAfterStill: fix,
+        lat: fix !== null ? snap.lat : null,
+        lon: fix !== null ? snap.lon : null,
+        fixAt: fix,
       });
     } else if (snap.lastSeenAt < staleCutoff) {
-      alerts.push({ tagId: snap.tagId, label: snap.label, kind: 'stale', lastSeenAt: snap.lastSeenAt });
+      alerts.push({
+        tagId: snap.tagId,
+        label: snap.label,
+        kind: 'stale',
+        lastSeenAt: snap.lastSeenAt,
+        lat: snap.lat,
+        lon: snap.lon,
+        fixAt: snap.lat !== null ? snap.fixAt : null,
+      });
     }
   }
   return alerts;

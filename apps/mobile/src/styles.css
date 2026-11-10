@@ -1610,7 +1610,9 @@ input:focus {
   }
 }
 
-/* Count of tags allocated to a geofence, centred in it. */
+/* Count of tags placed in a geofence, inside it: grey, white number, a thick
+   brim in the geofence's own colour (set inline). Its pane sits under the tag
+   dots so a tag is always drawn on top of it. */
 .geofence-count-wrap {
   background: none;
   border: none;
@@ -1619,17 +1621,179 @@ input:focus {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 34px;
-  height: 34px;
+  box-sizing: border-box;
+  width: 38px;
+  height: 38px;
   border-radius: 50%;
-  background: rgba(90, 94, 88, 0.92);
+  border: 4px solid #e9ae2f;
+  background: rgba(90, 94, 88, 0.94);
   color: #fff;
   font-weight: 700;
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1;
   font-variant-numeric: tabular-nums;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
-  pointer-events: none;
+}
+
+/* A box over the map: the geofence info and the legend. */
+.map-popup {
+  position: absolute;
+  z-index: 600;
+  left: 12px;
+  right: 12px;
+  bottom: calc(var(--dock-space) + 52px);
+  max-height: calc(100% - var(--dock-space) - 120px);
+  overflow-y: auto;
+  padding: 14px 16px 16px;
+  background: rgba(27, 30, 23, 0.97);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+}
+.map-popup-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  font-size: 17px;
+}
+.map-popup-head strong {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.map-popup-x {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  margin: -8px -8px -8px 0;
+  font-size: 26px;
+  line-height: 1;
+  color: var(--ink-dim);
+}
+.geofence-swatch {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+}
+.map-popup-facts {
+  margin: 0 0 14px;
+}
+.map-popup-facts > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 0;
+  border-top: 1px solid var(--line);
+  font-size: 15px;
+}
+.map-popup-facts dt {
+  color: var(--ink-dim);
+}
+.map-popup-facts dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The Legend button, bottom right above the tab dock. */
+.legend-button {
+  position: absolute;
+  z-index: 500;
+  right: 12px;
+  bottom: var(--dock-space);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px 7px 12px;
+  border-radius: 18px;
+  background: rgba(18, 20, 15, 0.88);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  font-size: 14px;
+}
+.legend-i {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1.5px solid var(--ink-dim);
+  font-size: 11px;
+  font-weight: 700;
+  font-style: italic;
+  font-family: Georgia, serif;
+}
+.legend-popup {
+  left: auto;
+  width: 250px;
+}
+.legend-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+  font-size: 15px;
+}
+.legend-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.legend-list i {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 1.5px solid #12140f;
+}
+.legend-list i.legend-alert-ring {
+  width: 15px;
+  height: 15px;
+  border: 2px solid #fff;
+  background: transparent;
+}
+
+/* Highlight view: which geofence, and the way out. */
+.highlight-bar {
+  position: absolute;
+  z-index: 550;
+  left: 12px;
+  right: 120px;
+  bottom: var(--dock-space);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 6px 6px 12px;
+  border-radius: 12px;
+  background: rgba(18, 20, 15, 0.92);
+  border: 1px solid var(--warn);
+  font-size: 14px;
+}
+.highlight-bar span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.highlight-bar button {
+  flex: none;
+  padding: 7px 10px;
+  border-radius: 9px;
+  background: var(--panel-2);
+  font-size: 13px;
+  font-weight: 600;
+}
+.device-marker-wrap.dimmed {
+  opacity: 0.3;
+  filter: grayscale(1);
+}
+.device-marker-wrap.dimmed .device-marker-ping {
+  display: none;
 }
 
 /* Active / Past switch on the Alerts tab. */
@@ -1653,4 +1817,47 @@ input:focus {
 .segmented button[data-on='1'] {
   background: var(--panel-2);
   color: var(--ink);
+}
+
+/* "Open in Maps" → Open / Copy link, and the no-fix note in its place. */
+.maps-choice {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.maps-choice > .secondary {
+  flex: 1;
+}
+.maps-x {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  font-size: 22px;
+  color: var(--ink-dim);
+}
+.maps-no-fix {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 50px;
+  padding: 8px 12px;
+  border: 1px solid var(--warn);
+  border-radius: 12px;
+  color: var(--warn);
+  font-size: 15px;
+}
+.maps-no-fix > span {
+  flex: 1;
+}
+
+.loading-slow {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  color: var(--ink-dim);
+  text-align: center;
+}
+.loading-slow p {
+  margin: 0;
 }
